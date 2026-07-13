@@ -85,7 +85,7 @@ def beats(filepath):
 @main.command()
 @click.argument(
     "video_path",
-    type=click.Path(exists=True, dir_okay=False, readable=True),
+    type=click.Path(exists=True, readable=True),
 )
 @click.option(
     "--window",
@@ -93,12 +93,43 @@ def beats(filepath):
     show_default=True,
     help="Duration of the most-exciting segment (seconds).",
 )
-def analyze(video_path, window):
-    """Score a video clip for visual excitement.
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Re-analyze all clips, ignoring any cached results.",
+)
+def analyze(video_path, window, force):
+    """Score video clip(s) for visual excitement.
 
-    Outputs JSON with the most-exciting segment, per-frame motion scores,
-    and orientation metadata to stdout.
+    When VIDEO_PATH is a single file, outputs JSON with the most-exciting
+    segment, per-frame motion scores, and orientation metadata to stdout.
+
+    When VIDEO_PATH is a directory, recursively analyses all .mp4/.mov
+    files, caches per-clip results in a .recap-cache/ subdirectory, and
+    prints a summary of processed / skipped / errored clips.
     """
+    from pathlib import Path
+
+    p = Path(video_path)
+
+    if p.is_dir():
+        from recap.batch import analyze_directory
+
+        summary = analyze_directory(video_path, window_seconds=window, force=force)
+        processed = summary["processed"]
+        skipped = summary["skipped"]
+        errors = summary["errors"]
+
+        click.echo(f"Processed: {processed}, Skipped (cached): {skipped}, Errors: {len(errors)}")
+        for err in errors:
+            click.echo(f"  ERROR: {err['file']} — {err['error']}", err=True)
+
+        if errors:
+            sys.exit(1)
+        return
+
+    # Single-file path.
     from recap.video import analyze_video
 
     try:
