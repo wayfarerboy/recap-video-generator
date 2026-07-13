@@ -171,6 +171,55 @@ def assign(clips, music, mode, min_beats, max_beats, force):
 
 
 @main.command()
+@click.option(
+    "--plan",
+    "plan_path",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    required=True,
+    help="Path to the assignment plan JSON (output of `recap assign`).",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False),
+    default="recap-trims",
+    show_default=True,
+    help="Directory for trimmed MP4 files.",
+)
+def trim(plan_path, output_dir):
+    """Trim the exciting segment from each clip in the assignment plan.
+
+    Reads the assignment plan (JSON from ``recap assign``) and runs FFmpeg
+    to extract each clip's source_start–source_end segment.  Trims run in
+    parallel and produce frame-accurate H.264/AAC MP4 files.
+
+    Outputs the updated plan JSON with ``trim`` paths to stdout.
+    """
+    import json
+    import sys
+    from pathlib import Path
+
+    from recap.trim import trim_plan
+
+    plan = json.loads(Path(plan_path).read_text())
+    result = trim_plan(plan, output_dir=output_dir, verbose=True, progress_file=sys.stderr)
+
+    click.echo(json.dumps(result, indent=2))
+
+    summary = result["_trim_summary"]
+    if summary["failed"] > 0:
+        click.echo(
+            f"\nTrim summary: {summary['succeeded']} succeeded, "
+            f"{summary['failed']} failed",
+            err=True,
+        )
+        for err_item in summary["errors"]:
+            click.echo(f"  FAILED: {err_item['clip']} — {err_item['error']}", err=True)
+        sys.exit(1)
+    else:
+        click.echo(f"\nAll {summary['succeeded']} clips trimmed successfully.", err=True)
+
+
+@main.command()
 @click.argument(
     "video_path",
     type=click.Path(exists=True, readable=True),
