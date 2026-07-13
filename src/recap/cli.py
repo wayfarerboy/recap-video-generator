@@ -1,9 +1,12 @@
 """CLI entry point for recap."""
 
+import json
 import subprocess
 import sys
 
 import click
+
+from recap.audio import detect_beats
 
 
 @click.group()
@@ -61,4 +64,46 @@ def check():
 
     if missing:
         click.echo(f"Missing: {', '.join(missing)}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("filepath", type=click.Path(exists=False))
+def beats(filepath):
+    """Detect beats and energy in an audio file. Outputs JSON."""
+    try:
+        result = detect_beats(filepath)
+    except FileNotFoundError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+    click.echo(json.dumps(result))
+
+
+@main.command()
+@click.argument(
+    "video_path",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+)
+@click.option(
+    "--window",
+    default=3.0,
+    show_default=True,
+    help="Duration of the most-exciting segment (seconds).",
+)
+def analyze(video_path, window):
+    """Score a video clip for visual excitement.
+
+    Outputs JSON with the most-exciting segment, per-frame motion scores,
+    and orientation metadata to stdout.
+    """
+    from recap.video import analyze_video
+
+    try:
+        result = analyze_video(video_path, window_seconds=window)
+        click.echo(json.dumps(result))
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
