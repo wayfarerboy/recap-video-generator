@@ -83,6 +83,94 @@ def beats(filepath):
 
 
 @main.command()
+@click.option(
+    "--clips",
+    type=click.Path(exists=True, file_okay=False, readable=True),
+    required=True,
+    help="Directory containing source video clips.",
+)
+@click.option(
+    "--music",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    required=True,
+    help="Music audio file (MP3, WAV, etc.).",
+)
+@click.option(
+    "--mode",
+    type=click.Choice(["shuffled-tiers", "best-match"]),
+    default="shuffled-tiers",
+    show_default=True,
+    help="Assignment strategy.",
+)
+@click.option(
+    "--min-beats",
+    type=int,
+    default=4,
+    show_default=True,
+    help="Minimum beats per clip.",
+)
+@click.option(
+    "--max-beats",
+    type=int,
+    default=8,
+    show_default=True,
+    help="Maximum beats per clip.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Re-analyze all clips and music, ignoring any cached results.",
+)
+def assign(clips, music, mode, min_beats, max_beats, force):
+    """Assign video clips to beat slots on the music timeline.
+
+    Outputs a JSON assignment plan to stdout.
+    """
+    from pathlib import Path
+
+    from recap.assign import assign_clips
+    from recap.audio import detect_beats
+    from recap.batch import analyze_directory
+
+    # 1. Load beat analysis
+    music_path = Path(music)
+    cache_dir = music_path.parent / ".recap-cache"
+    music_cache_name = music_path.stem + "_beats.json"
+    music_cache_path = cache_dir / music_cache_name
+
+    if not force and music_cache_path.exists():
+        beat_data = json.loads(music_cache_path.read_text())
+    else:
+        beat_data = detect_beats(str(music_path))
+        cache_dir.mkdir(exist_ok=True)
+        music_cache_path.write_text(json.dumps(beat_data, indent=2))
+
+    # 2. Load clip analyses (uses batch cache)
+    batch = analyze_directory(str(Path(clips)), force=force)
+    if batch["errors"]:
+        for err in batch["errors"]:
+            click.echo(f"WARNING: {err['file']} — {err['error']}", err=True)
+
+    clip_data = batch["results"]
+
+    if not clip_data:
+        click.echo(json.dumps({"bpm": beat_data["bpm"], "assignments": []}))
+        return
+
+    # 3. Assign
+    plan = assign_clips(
+        beat_analysis=beat_data,
+        clip_analyses=clip_data,
+        mode=mode,
+        min_beats=min_beats,
+        max_beats=max_beats,
+    )
+
+    click.echo(json.dumps(plan, indent=2))
+
+
+@main.command()
 @click.argument(
     "video_path",
     type=click.Path(exists=True, readable=True),
