@@ -340,3 +340,143 @@ def analyze(video_path, window, force):
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+@main.command()
+@click.argument(
+    "clips_dir",
+    type=click.Path(exists=True, file_okay=False, readable=True),
+)
+@click.argument(
+    "music_file",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+)
+@click.option(
+    "-o",
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    default="recap.kdenlive",
+    show_default=True,
+    help="Path to write the .kdenlive project file.",
+)
+@click.option(
+    "--mode",
+    type=click.Choice(["shuffled-tiers", "best-match"]),
+    default="shuffled-tiers",
+    show_default=True,
+    help="Assignment strategy.",
+)
+@click.option(
+    "--ratio",
+    type=click.Choice(["16:9", "9:16"]),
+    default="16:9",
+    show_default=True,
+    help="Output aspect ratio.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Re-analyze all clips and music, ignoring any cached results.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False),
+    default="recap-trims",
+    show_default=True,
+    help="Directory for trimmed MP4 files.",
+)
+def create(clips_dir, music_file, output_path, mode, ratio, force, output_dir):
+    """Run the full recap pipeline: analyze → assign → trim → render.
+
+    CLIPS_DIR is a directory of source video clips (.mp4/.mov).
+    MUSIC_FILE is an audio file (MP3, WAV, etc.).
+    """
+    from pathlib import Path
+
+    from recap.assign import assign_clips
+    from recap.audio import detect_beats
+    from recap.batch import analyze_directory
+    from recap.render import render_kdenlive
+    from recap.trim import trim_plan
+
+    clips_path = Path(clips_dir)
+    music_path = Path(music_file)
+
+    # Stage 1: Batch analyze clips
+    click.echo("Stage 1/5: Analyzing clips...")
+    batch = analyze_directory(str(clips_path), force=force)
+    if batch["errors"]:
+        for err in batch["errors"]:
+            click.echo(f"  WARNING: {err['file']} — {err['error']}", err=True)
+    click.echo(
+        f"  Processed: {batch['processed']}, "
+        f"Skipped (cached): {batch['skipped']}, "
+        f"Errors: {len(batch['errors'])}"
+    )
+
+    clip_data = batch["results"]
+    if not clip_data:
+        click.echo("No clips found. Exiting.", err=True)
+        sys.exit(1)
+
+    # Stage 2: Analyze music
+    click.echo("Stage 2/5: Analyzing music...")
+    cache_dir = clips_path / ".recap-cache"
+    music_cache_name = music_path.stem + "_beats.json"
+    music_cache_path = cache_dir / music_cache_name
+
+    if not force and music_cache_path.exists():
+        beat_data = json.loads(music_cache_path.read_text())
+        click.echo("  Using cached beat analysis.")
+    else:
+        beat_data = detect_beats(str(music_path))
+        cache_dir.mkdir(exist_ok=True)
+        music_cache_path.write_text(json.dumps(beat_data, indent=2))
+    click.echo(
+        f"  Detected {beat_data['bpm']:.0f} BPM, "
+        f"{len(beat_data['beats'])} beats."
+    )
+
+    # Stage 3: Assign clips to beats
+    click.echo(f"Stage 3/5: Assigning clips to beats (mode: {mode})...")
+    plan = assign_clips(
+        beat_analysis=beat_data,
+        clip_analyses=clip_data,
+        mode=mode,
+    )
+    click.echo(f"  Assigned {len(plan['assignments'])} clip(s) to beat slots.")
+
+    # Stage 4: Trim exciting segments
+    click.echo("Stage 4/5: Trimming exciting segments...")
+    plan = trim_plan(plan, output_dir=output_dir, verbose=True)
+    summary = plan["_trim_summary"]
+    if summary["failed"] > 0:
+        click.echo(
+            f"  Trim errors: {summary['failed']} failed.",
+            err=True,
+        )
+        for err_item in summary["errors"]:
+            click.echo(
+                f"    FAILED: {err_item['clip']} — {err_item['error']}",
+                err=True,
+            )
+        sys.exit(1)
+    click.echo(f"  Trimmed {summary['succeeded']} clip(s).")
+
+    # Stage 5: Render kdenlive project
+    click.echo("Stage 5/5: Rendering kdenlive project...")
+    output_dir_resolved = Path(output_path).resolve().parent
+    xml = render_kdenlive(
+        plan,
+        music_path=str(music_path),
+        output_ratio=ratio,
+        fps=30.0,
+        output_dir=str(output_dir_resolved),
+    )
+    Path(output_path).write_text(xml, encoding="utf-8")
+    click.echo(f"  Wrote {output_path}")
+
+    click.echo("\nDone! Open the project in kdenlive:")
+    click.echo(f"  kdenlive {output_path}")
