@@ -220,6 +220,71 @@ def trim(plan_path, output_dir):
 
 
 @main.command()
+@click.option(
+    "--plan",
+    "plan_path",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    required=True,
+    help="Path to the assignment plan JSON (output of `recap assign` or `recap trim`).",
+)
+@click.option(
+    "--music",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    required=True,
+    help="Music audio file for the audio track.",
+)
+@click.option(
+    "-o",
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    default="recap.kdenlive",
+    show_default=True,
+    help="Path to write the .kdenlive project file.",
+)
+@click.option(
+    "--ratio",
+    type=click.Choice(["16:9", "9:16"]),
+    default="16:9",
+    show_default=True,
+    help="Output aspect ratio.",
+)
+@click.option(
+    "--fps",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Timeline frame rate.",
+)
+def render(plan_path, music, output_path, ratio, fps):
+    """Generate a .kdenlive project file from the assignment plan.
+
+    Reads the assignment plan (JSON from ``recap assign``, optionally
+    updated by ``recap trim``) and writes a valid .kdenlive project
+    file with per-clip MLT transforms for rotation and centre-crop.
+    """
+    from pathlib import Path
+
+    from recap.render import render_kdenlive
+
+    plan = json.loads(Path(plan_path).read_text())
+
+    # Use the output file's parent as the base for relative paths
+    output_dir = Path(output_path).resolve().parent
+
+    xml = render_kdenlive(
+        plan,
+        music_path=music,
+        output_ratio=ratio,
+        fps=fps,
+        output_dir=str(output_dir),
+    )
+
+    Path(output_path).write_text(xml, encoding="utf-8")
+    click.echo(f"Wrote {output_path}")
+
+
+@main.command()
 @click.argument(
     "video_path",
     type=click.Path(exists=True, readable=True),
