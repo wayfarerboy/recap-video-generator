@@ -107,23 +107,26 @@ def render_kdenlive(
     # ---- Video chains ---------------------------------------------------
     chain_id = 0
     chain_dur_seconds: list[float] = []
+    chain_kdenlive_ids: list[int] = []
     for a in assignments:
-        resource = a.get("trim", a["clip"])
-        dur_s = a.get("source_end", 0) - a.get("source_start", 0)
-        chain_dur_seconds.append(dur_s)
-        dur_tc = _seconds_to_timecode(dur_s)
+        resource = a["clip"]
 
-        # Use relative paths for trims
+        # Use relative paths; resolve for probe/hash
         res_path = Path(resource)
         res_abs = str(res_path)
-        file_h = _file_hash(str((output_dir_path / res_path).resolve()) if not res_path.is_absolute() else res_abs)
-        file_size = "0"
         full_path = res_path if res_path.is_absolute() else (output_dir_path / res_path)
+        file_h = _file_hash(str(full_path.resolve()))
+        file_size = "0"
         if full_path.exists():
             file_size = str(full_path.stat().st_size)
 
-        chain = ET.SubElement(mlt, "chain", {"id": f"chain{chain_id}", "out": dur_tc})
-        _add_prop(chain, "length", str(max(1, int(dur_s * fps))))
+        # Full source duration (probed via ffprobe, fallback to 10.0)
+        full_dur_s = _probe_duration(str(full_path))
+        chain_dur_seconds.append(full_dur_s)
+        full_dur_tc = _seconds_to_timecode(full_dur_s)
+
+        chain = ET.SubElement(mlt, "chain", {"id": f"chain{chain_id}", "out": full_dur_tc})
+        _add_prop(chain, "length", str(max(1, int(full_dur_s * fps))))
         _add_prop(chain, "eof", "pause")
         _add_prop(chain, "resource", res_abs)
         _add_prop(chain, "mlt_service", "avformat-novalidate")
@@ -138,6 +141,7 @@ def render_kdenlive(
         _add_prop(chain, "kdenlive:file_size", file_size)
         _add_prop(chain, "kdenlive:file_hash", file_h)
         _add_prop(chain, "kdenlive:monitorPosition", "0")
+        chain_kdenlive_ids.append(chain_id)
         chain_id += 1
 
     num_video_clips = chain_id
@@ -205,12 +209,15 @@ def render_kdenlive(
     # ---- tractor1: video sub-tractor (hide="audio") ---------------------
     pl_video = ET.SubElement(mlt, "playlist", {"id": "playlist2"})
     for i in range(num_video_clips):
-        dur_s = chain_dur_seconds[i]
-        ET.SubElement(pl_video, "entry", {
+        a = assignments[i]
+        in_tc = _seconds_to_timecode(a.get("source_start", 0))
+        out_tc = _seconds_to_timecode(a.get("source_end", 0))
+        entry = ET.SubElement(pl_video, "entry", {
             "producer": f"chain{i}",
-            "in": "00:00:00.000",
-            "out": _seconds_to_timecode(dur_s),
+            "in": in_tc,
+            "out": out_tc,
         })
+        _add_prop(entry, "kdenlive:id", str(chain_kdenlive_ids[i]))
     pl_v_empty = ET.SubElement(mlt, "playlist", {"id": "playlist3"})
     tractor1 = ET.SubElement(mlt, "tractor", {
         "id": "tractor1",

@@ -229,7 +229,6 @@ class TestCreatePipeline:
         assert "--mode" in result.output
         assert "--ratio" in result.output
         assert "--force" in result.output
-        assert "--output-dir" in result.output
 
     def test_missing_args_exits_with_error(self):
         """`recap create` with no args exits with error."""
@@ -237,8 +236,8 @@ class TestCreatePipeline:
         result = runner.invoke(main, ["create"])
         assert result.exit_code != 0
 
-    def test_pipeline_runs_all_five_stages(self, tmp_path, monkeypatch):
-        """End-to-end: create command calls each stage in order."""
+    def test_pipeline_runs_all_four_stages(self, tmp_path, monkeypatch):
+        """End-to-end: create command calls each stage in order (no trim)."""
         clips_dir = tmp_path / "clips"
         clips_dir.mkdir()
         music_file = tmp_path / "song.mp3"
@@ -248,12 +247,6 @@ class TestCreatePipeline:
         beat_data = _make_beat_analysis()
         clip_results = _make_clip_analyses(3)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-        trimmed_plan = _make_trimmed_plan(assign_plan)
-
-        # For trimmed clip paths, set clip paths to tmp_path-based
-        for a in trimmed_plan["assignments"]:
-            a["clip"] = str(clips_dir / "clip_0.mp4")
-            a["trim"] = str(tmp_path / "recap-trims" / "fake_trim.mp4")
 
         kdenlive_xml = '<?xml version="1.0"?>\n<mlt version="1.1"></mlt>'
 
@@ -271,10 +264,6 @@ class TestCreatePipeline:
             call_order.append(("assign_clips", mode))
             return dict(assign_plan)
 
-        def fake_trim_plan(plan, output_dir="recap-trims", **kwargs):
-            call_order.append(("trim_plan", output_dir))
-            return dict(trimmed_plan)
-
         def fake_render_kdenlive(plan, music_path, output_ratio="16:9", **kwargs):
             call_order.append(("render_kdenlive", music_path, output_ratio))
             return kdenlive_xml
@@ -282,7 +271,6 @@ class TestCreatePipeline:
         monkeypatch.setattr("recap.batch.analyze_directory", fake_analyze_directory)
         monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
         monkeypatch.setattr("recap.assign.assign_clips", fake_assign_clips)
-        monkeypatch.setattr("recap.trim.trim_plan", fake_trim_plan)
         monkeypatch.setattr("recap.render.render_kdenlive", fake_render_kdenlive)
 
         runner = click.testing.CliRunner()
@@ -298,28 +286,26 @@ class TestCreatePipeline:
 
         assert result.exit_code == 0, f"CLI failed: {result.output}\nstderr: {result.exc_info}"
 
-        # Verify each stage ran
-        assert len(call_order) == 5
+        # Verify each stage ran (4 stages, no trim)
+        assert len(call_order) == 4
         assert call_order[0] == ("analyze_directory", str(clips_dir), True)
         assert call_order[1] == ("detect_beats", str(music_file))
         assert call_order[2] == ("assign_clips", "best-match")
-        assert call_order[3] == ("trim_plan", "recap-trims")
-        assert call_order[4] == ("render_kdenlive", str(music_file), "9:16")
+        assert call_order[3] == ("render_kdenlive", str(music_file), "9:16")
 
         # Verify output file was written
         assert output_path.exists()
         assert output_path.read_text() == kdenlive_xml
 
         # Verify progress messages
-        assert "Stage 1/5" in result.output
-        assert "Stage 2/5" in result.output
-        assert "Stage 3/5" in result.output
-        assert "Stage 4/5" in result.output
-        assert "Stage 5/5" in result.output
+        assert "Stage 1/4" in result.output
+        assert "Stage 2/4" in result.output
+        assert "Stage 3/4" in result.output
+        assert "Stage 4/4" in result.output
         assert "Done!" in result.output
 
     def test_pipeline_defaults(self, tmp_path, monkeypatch):
-        """End-to-end: uses correct defaults (shuffled-tiers, 16:9)."""
+        """End-to-end: uses correct defaults (shuffled-tiers, 16:9, no trim)."""
         clips_dir = tmp_path / "clips"
         clips_dir.mkdir()
         music_file = tmp_path / "song.mp3"
@@ -328,10 +314,6 @@ class TestCreatePipeline:
         beat_data = _make_beat_analysis()
         clip_results = _make_clip_analyses(1)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-        trimmed_plan = _make_trimmed_plan(assign_plan)
-        for a in trimmed_plan["assignments"]:
-            a["clip"] = str(clips_dir / "clip_0.mp4")
-            a["trim"] = str(tmp_path / "recap-trims" / "fake_trim.mp4")
 
         call_order = []
 
@@ -342,9 +324,6 @@ class TestCreatePipeline:
         monkeypatch.setattr("recap.assign.assign_clips",
                            lambda beat_analysis, clip_analyses, mode="shuffled-tiers", **kw:
                            (call_order.append(("assign", mode)) or dict(assign_plan)))
-        monkeypatch.setattr("recap.trim.trim_plan",
-                           lambda plan, output_dir="recap-trims", **kw:
-                           (call_order.append(("trim", output_dir)) or dict(trimmed_plan)))
         monkeypatch.setattr("recap.render.render_kdenlive",
                            lambda plan, music_path, output_ratio="16:9", **kw:
                            (call_order.append(("render", output_ratio)) or "<xml/>"))
@@ -360,7 +339,8 @@ class TestCreatePipeline:
         assert ("assign", "shuffled-tiers") in call_order
         # 16:9 is default ratio
         assert ("render", "16:9") in call_order
-        assert ("trim", "recap-trims") in call_order
+        # trim is no longer called
+        assert not any(c[0] == "trim" for c in call_order)
 
     def test_no_clips_aborts_with_error(self, tmp_path, monkeypatch):
         """When no clips are found, exits non-zero."""
@@ -377,39 +357,8 @@ class TestCreatePipeline:
         assert result.exit_code == 1
         assert "No clips found" in result.output
 
-    def test_trim_failures_abort_with_error(self, tmp_path, monkeypatch):
-        """When trim stage has failures, exits non-zero."""
-        clips_dir = tmp_path / "clips"
-        clips_dir.mkdir()
-        music_file = tmp_path / "song.mp3"
-        music_file.write_text("fake audio")
-
-        beat_data = _make_beat_analysis()
-        clip_results = _make_clip_analyses(2)
-        assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-        bad_plan = _make_trimmed_plan(assign_plan)
-        bad_plan["_trim_summary"] = {
-            "succeeded": 0,
-            "failed": 2,
-            "errors": [
-                {"clip": "a.mp4", "error": "ffmpeg crash"},
-                {"clip": "b.mp4", "error": "timeout"},
-            ],
-        }
-
-        monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
-        monkeypatch.setattr("recap.audio.detect_beats", lambda *a, **kw: dict(beat_data))
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: dict(assign_plan))
-        monkeypatch.setattr("recap.trim.trim_plan", lambda *a, **kw: dict(bad_plan))
-
-        runner = click.testing.CliRunner()
-        result = runner.invoke(main, ["create", str(clips_dir), str(music_file)])
-        assert result.exit_code == 1
-        assert "ffmpeg crash" in result.output
-        assert "timeout" in result.output
-
-    def test_custom_output_dir_flag(self, tmp_path, monkeypatch):
-        """`--output-dir` is forwarded to trim_plan."""
+    def test_trim_removed_from_pipeline(self, tmp_path, monkeypatch):
+        """create no longer calls trim_plan (timeline trimming used instead)."""
         clips_dir = tmp_path / "clips"
         clips_dir.mkdir()
         music_file = tmp_path / "song.mp3"
@@ -418,13 +367,12 @@ class TestCreatePipeline:
         beat_data = _make_beat_analysis()
         clip_results = _make_clip_analyses(1)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-        trimmed_plan = _make_trimmed_plan(assign_plan)
 
-        captured_output_dir = []
+        trim_called = []
 
-        def fake_trim(plan, output_dir="recap-trims", **kw):
-            captured_output_dir.append(output_dir)
-            return dict(trimmed_plan)
+        def fake_trim(*a, **kw):
+            trim_called.append(True)
+            return assign_plan
 
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
         monkeypatch.setattr("recap.audio.detect_beats", lambda *a, **kw: dict(beat_data))
@@ -433,12 +381,9 @@ class TestCreatePipeline:
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()
-        result = runner.invoke(main, [
-            "create", str(clips_dir), str(music_file),
-            "--output-dir", "custom-trims",
-        ])
+        result = runner.invoke(main, ["create", str(clips_dir), str(music_file)])
         assert result.exit_code == 0
-        assert captured_output_dir == ["custom-trims"]
+        assert len(trim_called) == 0, "trim_plan should not be called"
 
     def test_music_caching_used_when_not_forced(self, tmp_path, monkeypatch):
         """When --force is not set and music cache exists, detect_beats is not called."""
@@ -461,12 +406,10 @@ class TestCreatePipeline:
 
         clip_results = _make_clip_analyses(1)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-        trimmed_plan = _make_trimmed_plan(assign_plan)
 
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
         monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
         monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: dict(assign_plan))
-        monkeypatch.setattr("recap.trim.trim_plan", lambda *a, **kw: dict(trimmed_plan))
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()
@@ -497,12 +440,10 @@ class TestCreatePipeline:
 
         clip_results = _make_clip_analyses(1)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-        trimmed_plan = _make_trimmed_plan(assign_plan)
 
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
         monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
         monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: dict(assign_plan))
-        monkeypatch.setattr("recap.trim.trim_plan", lambda *a, **kw: dict(trimmed_plan))
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()
@@ -534,12 +475,10 @@ class TestCreatePipeline:
 
         beat_data = _make_beat_analysis()
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-        trimmed_plan = _make_trimmed_plan(assign_plan)
 
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(batch_with_errors))
         monkeypatch.setattr("recap.audio.detect_beats", lambda *a, **kw: dict(beat_data))
         monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: dict(assign_plan))
-        monkeypatch.setattr("recap.trim.trim_plan", lambda *a, **kw: dict(trimmed_plan))
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()

@@ -270,6 +270,9 @@ class TestUniqueIds:
         for el in tree.iter():
             kid = el.find("property[@name='kdenlive:id']")
             if kid is not None and kid.text:
+                # Entry children mirror their chain's kdenlive:id — skip
+                if el.tag == "entry":
+                    continue
                 ids.append(int(kid.text))
         assert len(ids) == len(set(ids)), f"Duplicate kdenlive:id values: {[x for x in ids if ids.count(x) > 1]}"
 
@@ -280,6 +283,109 @@ class TestUniqueIds:
             kid = el.find("property[@name='kdenlive:id']")
             if kid is not None and kid.text:
                 assert int(kid.text) >= 0, f"Negative kdenlive:id: {kid.text}"
+
+
+class TestTimelineInOut:
+    """Verify timeline entries use plan source_start/source_end for in/out."""
+
+    @pytest.fixture
+    def trimming_plan(self):
+        return {
+            "bpm": 120.0,
+            "fps": 30.0,
+            "assignments": [
+                {
+                    "clip": "/fake/clips/ski.mp4",
+                    "trim": "/fake/trims/abc123.mp4",
+                    "source_start": 2.5,
+                    "source_end": 5.5,
+                    "target_start": 0.0,
+                    "beat_index": 0,
+                    "beat_count": 6,
+                    "beat_energy": 0.4,
+                    "motion_score": 0.9,
+                },
+            ],
+        }
+
+    def test_chain_resource_uses_clip_not_trim(self, trimming_plan):
+        xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        # Find video chain (clip_type=0, not music, not chain49)
+        for chain in tree.findall("chain"):
+            ct = chain.find("property[@name='kdenlive:clip_type']")
+            if ct is not None and ct.text == "0":
+                res = chain.find("property[@name='resource']")
+                assert res is not None
+                assert res.text == "/fake/clips/ski.mp4"
+                return
+        pytest.fail("Video chain not found")
+
+    def test_timeline_entry_in_out_from_plan(self, trimming_plan):
+        xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        playlist2 = tree.find("playlist[@id='playlist2']")
+        entries = playlist2.findall("entry")
+        assert len(entries) == 1
+        entry = entries[0]
+        # source_start=2.5, source_end=5.5
+        assert entry.get("in") == "00:00:02.500"
+        assert entry.get("out") == "00:00:05.500"
+
+    def test_timeline_entry_has_kdenlive_id_child(self, trimming_plan):
+        xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        playlist2 = tree.find("playlist[@id='playlist2']")
+        entries = playlist2.findall("entry")
+        assert len(entries) >= 1
+        for entry in entries:
+            kid = entry.find("property[@name='kdenlive:id']")
+            assert kid is not None, f"Entry producer={entry.get('producer')} missing kdenlive:id child"
+            assert int(kid.text) >= 0
+
+    def test_kdenlive_id_matches_chain(self, trimming_plan):
+        xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        playlist2 = tree.find("playlist[@id='playlist2']")
+        entry = playlist2.findall("entry")[0]
+        entry_kid = int(entry.find("property[@name='kdenlive:id']").text)
+        # Find the chain with that producer
+        producer = entry.get("producer")
+        chain = tree.find(f"chain[@id='{producer}']")
+        chain_kid_el = chain.find("property[@name='kdenlive:id']")
+        assert chain_kid_el is not None
+        assert int(chain_kid_el.text) == entry_kid
+
+    def test_chain_out_is_full_probed_duration(self, trimming_plan):
+        xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        # /fake/clips/ski.mp4 doesn't exist, so _probe_duration returns 10.0
+        for chain in tree.findall("chain"):
+            ct = chain.find("property[@name='kdenlive:clip_type']")
+            if ct is not None and ct.text == "0":
+                out = chain.get("out")
+                # 10.0 seconds from fallback probe
+                assert out == "00:00:10.000", f"Expected 00:00:10.000, got {out}"
+                length_el = chain.find("property[@name='length']")
+                assert length_el is not None
+                # 10s * 30fps = 300
+                assert int(length_el.text) == 300
+                return
+        pytest.fail("Video chain not found")
+
+    def test_main_bin_entries_show_full_duration(self, trimming_plan):
+        xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        main_bin = tree.find("playlist[@id='main_bin']")
+        # Find the video entry (producer starts with "chain")
+        for entry in main_bin.findall("entry"):
+            prod = entry.get("producer", "")
+            if prod.startswith("chain") and prod != "chain49":
+                assert entry.get("in") == "00:00:00.000"
+                # full probed duration = 10.0
+                assert entry.get("out") == "00:00:10.000"
+                return
+        pytest.fail("Video main_bin entry not found")
 
 
 class TestTractorProperties:

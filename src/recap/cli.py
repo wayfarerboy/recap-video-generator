@@ -380,18 +380,13 @@ def analyze(video_path, window, force):
     default=False,
     help="Re-analyze all clips and music, ignoring any cached results.",
 )
-@click.option(
-    "--output-dir",
-    type=click.Path(file_okay=False),
-    default="recap-trims",
-    show_default=True,
-    help="Directory for trimmed MP4 files.",
-)
-def create(clips_dir, music_file, output_path, mode, ratio, force, output_dir):
-    """Run the full recap pipeline: analyze → assign → trim → render.
+def create(clips_dir, music_file, output_path, mode, ratio, force):
+    """Run the full recap pipeline: analyze → assign → render.
 
     CLIPS_DIR is a directory of source video clips (.mp4/.mov).
     MUSIC_FILE is an audio file (MP3, WAV, etc.).
+    Trimming is done at timeline playback via Kdenlive in/out points —
+    no pre-trimmed media files are produced.
     """
     from pathlib import Path
 
@@ -399,13 +394,12 @@ def create(clips_dir, music_file, output_path, mode, ratio, force, output_dir):
     from recap.audio import detect_beats
     from recap.batch import analyze_directory
     from recap.render import render_kdenlive
-    from recap.trim import trim_plan
 
     clips_path = Path(clips_dir)
     music_path = Path(music_file)
 
     # Stage 1: Batch analyze clips
-    click.echo("Stage 1/5: Analyzing clips...")
+    click.echo("Stage 1/4: Analyzing clips...")
     batch = analyze_directory(str(clips_path), force=force)
     if batch["errors"]:
         for err in batch["errors"]:
@@ -422,7 +416,7 @@ def create(clips_dir, music_file, output_path, mode, ratio, force, output_dir):
         sys.exit(1)
 
     # Stage 2: Analyze music
-    click.echo("Stage 2/5: Analyzing music...")
+    click.echo("Stage 2/4: Analyzing music...")
     cache_dir = clips_path / ".recap-cache"
     music_cache_name = music_path.stem + "_beats.json"
     music_cache_path = cache_dir / music_cache_name
@@ -440,7 +434,7 @@ def create(clips_dir, music_file, output_path, mode, ratio, force, output_dir):
     )
 
     # Stage 3: Assign clips to beats
-    click.echo(f"Stage 3/5: Assigning clips to beats (mode: {mode})...")
+    click.echo(f"Stage 3/4: Assigning clips to beats (mode: {mode})...")
     plan = assign_clips(
         beat_analysis=beat_data,
         clip_analyses=clip_data,
@@ -448,25 +442,8 @@ def create(clips_dir, music_file, output_path, mode, ratio, force, output_dir):
     )
     click.echo(f"  Assigned {len(plan['assignments'])} clip(s) to beat slots.")
 
-    # Stage 4: Trim exciting segments
-    click.echo("Stage 4/5: Trimming exciting segments...")
-    plan = trim_plan(plan, output_dir=output_dir, verbose=True)
-    summary = plan["_trim_summary"]
-    if summary["failed"] > 0:
-        click.echo(
-            f"  Trim errors: {summary['failed']} failed.",
-            err=True,
-        )
-        for err_item in summary["errors"]:
-            click.echo(
-                f"    FAILED: {err_item['clip']} — {err_item['error']}",
-                err=True,
-            )
-        sys.exit(1)
-    click.echo(f"  Trimmed {summary['succeeded']} clip(s).")
-
-    # Stage 5: Render kdenlive project
-    click.echo("Stage 5/5: Rendering kdenlive project...")
+    # Stage 4: Render kdenlive project
+    click.echo("Stage 4/4: Rendering kdenlive project...")
     output_dir_resolved = Path(output_path).resolve().parent
     xml = render_kdenlive(
         plan,
