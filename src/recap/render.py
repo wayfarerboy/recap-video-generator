@@ -224,7 +224,13 @@ def render_kdenlive(
     for i in range(num_video_clips):
         a = assignments[i]
         target = a.get("target_start", 0)
-        dur_s = a.get("source_end", 0) - a.get("source_start", 0)
+
+        # Beat slot duration: how long this clip occupies on the timeline
+        if i + 1 < num_video_clips:
+            next_target = assignments[i + 1].get("target_start", 0)
+            slot_dur = next_target - target
+        else:
+            slot_dur = music_dur - target
 
         # Add blank entry if there's a gap between timeline_pos and target
         if target > timeline_pos + 0.001:
@@ -236,14 +242,15 @@ def render_kdenlive(
             })
 
         in_tc = _seconds_to_timecode(a.get("source_start", 0))
-        out_tc = _seconds_to_timecode(a.get("source_end", 0))
+        # Use source_start + slot_dur so clip exactly fills the beat slot
+        out_tc = _seconds_to_timecode(a.get("source_start", 0) + slot_dur)
         entry = ET.SubElement(pl_video, "entry", {
             "producer": f"chain{i}",
             "in": in_tc,
             "out": out_tc,
         })
         _add_prop(entry, "kdenlive:id", str(chain_kdenlive_ids[i]))
-        timeline_pos = target + dur_s
+        timeline_pos = target + slot_dur
     pl_v_empty = ET.SubElement(mlt, "playlist", {"id": "playlist3"})
     tractor1 = ET.SubElement(mlt, "tractor", {
         "id": "tractor1",

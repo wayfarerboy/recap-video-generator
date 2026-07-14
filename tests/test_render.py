@@ -326,11 +326,16 @@ class TestTimelineInOut:
         tree = ET.fromstring(xml)
         playlist2 = tree.find("playlist[@id='playlist2']")
         entries = playlist2.findall("entry")
-        assert len(entries) == 1
-        entry = entries[0]
-        # source_start=2.5, source_end=5.5
+        # First entry may be blank offset — skip it
+        clip_entries = [e for e in entries if e.get("producer", "").startswith("chain")]
+        assert len(clip_entries) == 1
+        entry = clip_entries[0]
+        # source_start=2.5, in should match
         assert entry.get("in") == "00:00:02.500"
-        assert entry.get("out") == "00:00:05.500"
+        # out uses source_start + slot_dur (beat-aligned), not source_end
+        # slot for single clip = music_dur - target_start (music_dur=10.0 from probe)
+        # target_start is 0.0, so slot_dur = 10.0s
+        assert entry.get("out") == "00:00:12.500"
 
     def test_timeline_entry_has_kdenlive_id_child(self, trimming_plan):
         xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
