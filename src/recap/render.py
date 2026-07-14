@@ -162,7 +162,7 @@ def render_kdenlive(
     mlt = ET.Element("mlt")
     mlt.set("LC_NUMERIC", "C")
     mlt.set("producer", "main_bin")
-    mlt.set("root", str(root_dir))
+    mlt.set("root", "")
     mlt.set("version", "7.37.0")
 
     # Profile
