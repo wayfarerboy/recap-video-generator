@@ -7,6 +7,7 @@ import click.testing
 import pytest
 
 from recap.cli import main
+from recap.plan import Plan, Assignment
 
 
 def test_help_prints_usage():
@@ -153,55 +154,42 @@ def _make_clip_analyses(num_clips=3):
 
 
 def _make_assignment_plan(bpm=120.0, clips_dir="/fake"):
-    """Return a synthetic assignment plan with 3 clips."""
-    return {
-        "bpm": bpm,
-        "assignments": [
-            {
-                "clip": f"{clips_dir}/clip_0.mp4",
-                "source_start": 0.75,
-                "source_end": 3.25,
-                "target_start": 0.0,
-                "beat_index": 0,
-                "beat_count": 5,
-                "beat_energy": 0.55,
-                "motion_score": 0.9,
-            },
-            {
-                "clip": f"{clips_dir}/clip_1.mp4",
-                "source_start": 0.75,
-                "source_end": 3.25,
-                "target_start": 2.5,
-                "beat_index": 5,
-                "beat_count": 5,
-                "beat_energy": 0.55,
-                "motion_score": 0.7,
-            },
-            {
-                "clip": f"{clips_dir}/clip_2.mp4",
-                "source_start": 0.75,
-                "source_end": 3.25,
-                "target_start": 5.0,
-                "beat_index": 10,
-                "beat_count": 5,
-                "beat_energy": 0.55,
-                "motion_score": 0.5,
-            },
+    """Return a synthetic assignment Plan with 3 clips."""
+    return Plan(
+        bpm=bpm,
+        assignments=[
+            Assignment(
+                clip=f"{clips_dir}/clip_0.mp4",
+                source_start=0.75,
+                source_end=3.25,
+                target_start=0.0,
+                beat_index=0,
+                beat_count=5,
+                beat_energy=0.55,
+                motion_score=0.9,
+            ),
+            Assignment(
+                clip=f"{clips_dir}/clip_1.mp4",
+                source_start=0.75,
+                source_end=3.25,
+                target_start=2.5,
+                beat_index=5,
+                beat_count=5,
+                beat_energy=0.55,
+                motion_score=0.7,
+            ),
+            Assignment(
+                clip=f"{clips_dir}/clip_2.mp4",
+                source_start=0.75,
+                source_end=3.25,
+                target_start=5.0,
+                beat_index=10,
+                beat_count=5,
+                beat_energy=0.55,
+                motion_score=0.5,
+            ),
         ],
-    }
-
-
-def _make_trimmed_plan(plan):
-    """Add trim paths and summary to an assignment plan."""
-    p = dict(plan)
-    for a in p["assignments"]:
-        a["trim"] = a["clip"].replace(".mp4", "_trim.mp4")
-    p["_trim_summary"] = {
-        "succeeded": len(p["assignments"]),
-        "failed": 0,
-        "errors": [],
-    }
-    return p
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +250,7 @@ class TestCreatePipeline:
 
         def fake_assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", **kwargs):
             call_order.append(("assign_clips", mode))
-            return dict(assign_plan)
+            return assign_plan
 
         def fake_render_kdenlive(plan, music_path, output_ratio="16:9", **kwargs):
             call_order.append(("render_kdenlive", music_path, output_ratio))
@@ -333,7 +321,7 @@ class TestCreatePipeline:
 
         def fake_assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", **kwargs):
             call_order.append(("assign_clips", mode))
-            return dict(assign_plan)
+            return assign_plan
 
         def fake_render_kdenlive(plan, music_path, output_ratio="16:9", **kwargs):
             call_order.append(("render_kdenlive", music_path, output_ratio))
@@ -389,7 +377,7 @@ class TestCreatePipeline:
                            lambda filepath: (call_order.append(("beats",)) or dict(beat_data)))
         monkeypatch.setattr("recap.assign.assign_clips",
                            lambda beat_analysis, clip_analyses, mode="shuffled-tiers", **kw:
-                           (call_order.append(("assign", mode)) or dict(assign_plan)))
+                           (call_order.append(("assign", mode)) or assign_plan))
         monkeypatch.setattr("recap.render.render_kdenlive",
                            lambda plan, music_path, output_ratio="16:9", **kw:
                            (call_order.append(("render", output_ratio)) or "<xml/>"))
@@ -442,7 +430,7 @@ class TestCreatePipeline:
 
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
         monkeypatch.setattr("recap.audio.detect_beats", lambda *a, **kw: dict(beat_data))
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: dict(assign_plan))
+        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: assign_plan)
         monkeypatch.setattr("recap.trim.trim_plan", fake_trim)
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
@@ -477,7 +465,7 @@ class TestCreatePipeline:
 
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
         monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: dict(assign_plan))
+        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: assign_plan)
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()
@@ -511,7 +499,7 @@ class TestCreatePipeline:
 
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
         monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: dict(assign_plan))
+        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: assign_plan)
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()
@@ -546,7 +534,7 @@ class TestCreatePipeline:
 
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(batch_with_errors))
         monkeypatch.setattr("recap.audio.detect_beats", lambda *a, **kw: dict(beat_data))
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: dict(assign_plan))
+        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: assign_plan)
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()

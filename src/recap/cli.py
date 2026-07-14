@@ -7,6 +7,7 @@ import sys
 import click
 
 from recap.audio import detect_beats
+from recap.plan import Plan
 
 
 @click.group()
@@ -162,7 +163,8 @@ def assign(clips, music, mode, min_beats, max_beats, seed, force):
     clip_data = batch["results"]
 
     if not clip_data:
-        click.echo(json.dumps({"bpm": beat_data["bpm"], "assignments": []}))
+        empty_plan = Plan(bpm=beat_data["bpm"])
+        click.echo(json.dumps(empty_plan.to_dict(), indent=2))
         return
 
     # 3. Assign
@@ -175,7 +177,7 @@ def assign(clips, music, mode, min_beats, max_beats, seed, force):
         seed=seed,
     )
 
-    click.echo(json.dumps(plan, indent=2))
+    click.echo(json.dumps(plan.to_dict(), indent=2))
 
 
 @main.command()
@@ -208,12 +210,11 @@ def trim(plan_path, output_dir):
 
     from recap.trim import trim_plan
 
-    plan = json.loads(Path(plan_path).read_text())
-    result = trim_plan(plan, output_dir=output_dir, verbose=True, progress_file=sys.stderr)
+    plan_dict = json.loads(Path(plan_path).read_text())
+    plan = Plan.from_dict(plan_dict)
+    trimmed_plan, summary = trim_plan(plan, output_dir=output_dir, verbose=True, progress_file=sys.stderr)
 
-    click.echo(json.dumps(result, indent=2))
-
-    summary = result["_trim_summary"]
+    click.echo(json.dumps(trimmed_plan.to_dict(), indent=2))
     if summary["failed"] > 0:
         click.echo(
             f"\nTrim summary: {summary['succeeded']} succeeded, "
@@ -275,7 +276,8 @@ def render(plan_path, music, output_path, ratio, fps):
 
     from recap.render import render_kdenlive
 
-    plan = json.loads(Path(plan_path).read_text())
+    plan_dict = json.loads(Path(plan_path).read_text())
+    plan = Plan.from_dict(plan_dict)
 
     # Use the output file's parent as the base for relative paths
     output_dir = Path(output_path).resolve().parent
@@ -495,7 +497,7 @@ def create(clips_dir, music_file, output_path, mode, ratio, seed, force, fps, no
         mode=mode,
         seed=seed,
     )
-    click.echo(f"  Assigned {len(plan['assignments'])} clip(s) to beat slots.")
+    click.echo(f"  Assigned {len(plan.assignments)} clip(s) to beat slots.")
 
     # Stage 4/5: Render kdenlive project
     stage_render = 5 if do_transcode else 4

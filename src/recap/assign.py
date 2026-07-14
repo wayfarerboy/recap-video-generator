@@ -15,6 +15,8 @@ import math
 import random
 from typing import Any
 
+from recap.plan import Assignment, Plan
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -27,7 +29,7 @@ def assign_clips(
     min_beats: int = 4,
     max_beats: int = 8,
     seed: int | None = 42,
-) -> dict[str, Any]:
+) -> Plan:
     """Assign video clips to beat slots on the music timeline.
 
     Parameters
@@ -51,11 +53,8 @@ def assign_clips(
 
     Returns
     -------
-    dict
-        ``{"bpm": float, "assignments": list[dict]}`` where each
-        assignment dict has keys ``clip``, ``source_start``, ``source_end``,
-        ``target_start``, ``beat_index``, ``beat_count``, ``beat_energy``,
-        and ``motion_score``.
+    Plan
+        A :class:`Plan` with ``bpm`` and ``assignments`` list.
     """
     if mode not in ("shuffled-tiers", "best-match"):
         raise ValueError(f"Unknown mode: {mode!r}. Use 'shuffled-tiers' or 'best-match'.")
@@ -65,7 +64,7 @@ def assign_clips(
     energy: list[float] = beat_analysis["energy"]
 
     if not beats or not clip_analyses:
-        return {"bpm": bpm, "assignments": []}
+        return Plan(bpm=bpm)
 
     beat_interval = 60.0 / bpm if bpm > 0 else 0.5
 
@@ -120,7 +119,7 @@ def assign_clips(
     # ------------------------------------------------------------------
     # 3. Lay clips out consecutively on the beat timeline
     # ------------------------------------------------------------------
-    assignments: list[dict[str, Any]] = []
+    assignments: list[Assignment] = []
     beat_idx = 0
     total_beats = len(beats)
 
@@ -139,17 +138,17 @@ def assign_clips(
 
         target_start = beats[beat_idx] if beat_idx < total_beats else 0.0
 
-        assignments.append({
-            "clip": entry["path"],
-            "source_start": entry["source_start"],
-            "source_end": entry["source_end"],
-            "target_start": target_start,
-            "beat_index": beat_idx,
-            "beat_count": n_beats,
-            "beat_energy": round(beat_energy, 4),
-            "motion_score": entry["motion_score"],
-        })
+        assignments.append(Assignment(
+            clip=entry["path"],
+            source_start=entry["source_start"],
+            source_end=entry["source_end"],
+            target_start=target_start,
+            beat_index=beat_idx,
+            beat_count=n_beats,
+            beat_energy=round(beat_energy, 4),
+            motion_score=entry["motion_score"],
+        ))
 
         beat_idx += n_beats
 
-    return {"bpm": bpm, "assignments": assignments}
+    return Plan(bpm=bpm, assignments=assignments)

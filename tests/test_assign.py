@@ -6,6 +6,7 @@ import math
 import pytest
 
 from recap.assign import assign_clips
+from recap.plan import Plan
 
 
 # ---------------------------------------------------------------------------
@@ -73,29 +74,26 @@ def _make_clip_analyses(num_clips: int, base_score: float = 0.8):
 # ---------------------------------------------------------------------------
 
 class TestOutputStructure:
-    def test_returns_dict_with_bpm_and_assignments(self, beat_analysis, clip_analyses):
+    def test_returns_plan_with_bpm_and_assignments(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        assert isinstance(result, dict)
-        assert "bpm" in result
-        assert result["bpm"] == 120.0
-        assert "assignments" in result
-        assert isinstance(result["assignments"], list)
+        assert isinstance(result, Plan)
+        assert result.bpm == 120.0
+        assert isinstance(result.assignments, list)
 
     def test_each_assignment_has_required_keys(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        for slot in result["assignments"]:
-            assert "clip" in slot
-            assert "source_start" in slot
-            assert "source_end" in slot
-            assert "target_start" in slot
-            assert "beat_index" in slot
-            assert "beat_count" in slot
-            assert "beat_energy" in slot
-            assert "motion_score" in slot
+        for slot in result.assignments:
+            assert slot.clip != ""
+            assert slot.source_start >= 0
+            assert slot.source_end > 0
+            assert slot.target_start >= 0
+            assert slot.beat_index >= 0
+            assert slot.beat_count > 0
+            assert slot.motion_score > 0
 
     def test_target_starts_are_monotonic(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        starts = [a["target_start"] for a in result["assignments"]]
+        starts = [a.target_start for a in result.assignments]
         for i in range(1, len(starts)):
             assert starts[i] >= starts[i - 1], f"target_start not monotonic at index {i}"
 
@@ -103,8 +101,8 @@ class TestOutputStructure:
         """Same seed produces identical assignments."""
         a = assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", seed=42)
         b = assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", seed=42)
-        assert [x["clip"] for x in a["assignments"]] == [x["clip"] for x in b["assignments"]]
-        assert [x["target_start"] for x in a["assignments"]] == [x["target_start"] for x in b["assignments"]]
+        assert [x.clip for x in a.assignments] == [x.clip for x in b.assignments]
+        assert [x.target_start for x in a.assignments] == [x.target_start for x in b.assignments]
 
     def test_shuffled_tiers_different_seeds_differ(self, beat_analysis, clip_analyses):
         """Different seeds can produce different orderings."""
@@ -112,13 +110,13 @@ class TestOutputStructure:
         clips = _make_clip_analyses(20)
         a = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=42)
         b = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=99)
-        clips_a = [x["clip"] for x in a["assignments"]]
-        clips_b = [x["clip"] for x in b["assignments"]]
+        clips_a = [x.clip for x in a.assignments]
+        clips_b = [x.clip for x in b.assignments]
         assert clips_a != clips_b, "different seeds produced identical orderings"
 
     def test_beat_indices_are_monotonic(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        indices = [a["beat_index"] for a in result["assignments"]]
+        indices = [a.beat_index for a in result.assignments]
         for i in range(1, len(indices)):
             assert indices[i] > indices[i - 1], f"beat_index not strictly increasing at {i}"
 
@@ -132,7 +130,7 @@ class TestNoAdjacentSameSource:
         """Shuffled-tiers with unique clips trivially satisfies adjacency constraint."""
         clips = _make_clip_analyses(8)
         result = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=42)
-        clips_list = [a["clip"] for a in result["assignments"]]
+        clips_list = [a.clip for a in result.assignments]
         for i in range(1, len(clips_list)):
             assert clips_list[i] != clips_list[i - 1], \
                 f"adjacent same-source at index {i}: {clips_list[i]}"
@@ -140,7 +138,7 @@ class TestNoAdjacentSameSource:
     def test_no_adjacent_same_source_best_match(self, beat_analysis):
         clips = _make_clip_analyses(8)
         result = assign_clips(beat_analysis, clips, mode="best-match")
-        clips_list = [a["clip"] for a in result["assignments"]]
+        clips_list = [a.clip for a in result.assignments]
         for i in range(1, len(clips_list)):
             assert clips_list[i] != clips_list[i - 1], \
                 f"adjacent same-source at index {i}: {clips_list[i]}"
@@ -150,13 +148,13 @@ class TestNoClipRepeats:
     def test_no_repeats_shuffled(self, beat_analysis):
         clips = _make_clip_analyses(6)
         result = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=42)
-        paths = [a["clip"] for a in result["assignments"]]
+        paths = [a.clip for a in result.assignments]
         assert len(paths) == len(set(paths))
 
     def test_no_repeats_best_match(self, beat_analysis):
         clips = _make_clip_analyses(6)
         result = assign_clips(beat_analysis, clips, mode="best-match")
-        paths = [a["clip"] for a in result["assignments"]]
+        paths = [a.clip for a in result.assignments]
         assert len(paths) == len(set(paths))
 
 
@@ -167,35 +165,34 @@ class TestNoClipRepeats:
 class TestBestMatch:
     def test_highest_motion_first(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses, mode="best-match")
-        scores = [a["motion_score"] for a in result["assignments"]]
+        scores = [a.motion_score for a in result.assignments]
         assert scores == sorted(scores, reverse=True), \
             f"expected descending motion scores, got {scores}"
 
     def test_all_clips_assigned(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses, mode="best-match")
-        assert len(result["assignments"]) == len(clip_analyses)
+        assert len(result.assignments) == len(clip_analyses)
 
     def test_clip_beat_count_in_range(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses, mode="best-match")
-        for a in result["assignments"]:
-            assert 4 <= a["beat_count"] <= 8, \
-                f"beat_count {a['beat_count']} out of [4,8] range"
+        for a in result.assignments:
+            assert 4 <= a.beat_count <= 8, \
+                f"beat_count {a.beat_count} out of [4,8] range"
 
 
 class TestShuffledTiers:
     def test_all_clips_assigned(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", seed=42)
-        assert len(result["assignments"]) == len(clip_analyses)
+        assert len(result.assignments) == len(clip_analyses)
 
     def test_tiers_exist_when_enough_clips(self, beat_analysis):
         """With 9+ clips, all three tiers should have clips."""
         clips = _make_clip_analyses(9)
         result = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=42)
-        scores = [a["motion_score"] for a in result["assignments"]]
+        scores = [a.motion_score for a in result.assignments]
         # First third should be highest motion (tier: high)
         n = len(scores)
         tier_size = max(1, n // 3)
-        high_tier = scores[:tier_size]
         # High tier clips should generally have higher scores than med/low
         # (after randomization within tier, boundaries may blur)
         # Just sanity-check that all clips are present.
@@ -205,22 +202,22 @@ class TestShuffledTiers:
         clips = _make_clip_analyses(6)
         r1 = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=42)
         r2 = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=42)
-        assert r1["assignments"] == r2["assignments"]
+        assert r1.assignments == r2.assignments
 
     def test_different_seeds_produce_different_orders(self, beat_analysis):
         clips = _make_clip_analyses(10)
         r1 = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=1)
         r2 = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=2)
-        paths1 = [a["clip"] for a in r1["assignments"]]
-        paths2 = [a["clip"] for a in r2["assignments"]]
+        paths1 = [a.clip for a in r1.assignments]
+        paths2 = [a.clip for a in r2.assignments]
         # With 10 clips, probability of identical shuffle is 1/10! ≈ 0
         assert paths1 != paths2
 
     def test_clip_beat_count_in_range(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", seed=42)
-        for a in result["assignments"]:
-            assert 4 <= a["beat_count"] <= 8, \
-                f"beat_count {a['beat_count']} out of [4,8] range"
+        for a in result.assignments:
+            assert 4 <= a.beat_count <= 8, \
+                f"beat_count {a.beat_count} out of [4,8] range"
 
 
 # ---------------------------------------------------------------------------
@@ -230,35 +227,35 @@ class TestShuffledTiers:
 class TestZeroClips:
     def test_returns_empty_assignments(self, beat_analysis):
         result = assign_clips(beat_analysis, {})
-        assert result["assignments"] == []
-        assert result["bpm"] == 120.0
+        assert result.assignments == []
+        assert result.bpm == 120.0
 
     def test_assignments_is_list(self, beat_analysis):
         result = assign_clips(beat_analysis, {})
-        assert isinstance(result["assignments"], list)
+        assert isinstance(result.assignments, list)
 
 
 class TestZeroBeats:
     def test_returns_empty_assignments(self, clip_analyses):
         empty_beats = {"bpm": 120.0, "beats": [], "energy": []}
         result = assign_clips(empty_beats, clip_analyses)
-        assert result["assignments"] == []
+        assert result.assignments == []
 
 
 class TestSingleClip:
     def test_assigns_single_clip(self, beat_analysis):
         clips = _make_clip_analyses(1)
         result = assign_clips(beat_analysis, clips)
-        assert len(result["assignments"]) == 1
-        a = result["assignments"][0]
-        assert a["clip"] == "/tmp/clip_0.mp4"
-        assert a["beat_index"] == 0
-        assert a["target_start"] == 0.0
+        assert len(result.assignments) == 1
+        a = result.assignments[0]
+        assert a.clip == "/tmp/clip_0.mp4"
+        assert a.beat_index == 0
+        assert a.target_start == 0.0
 
     def test_single_clip_best_match(self, beat_analysis):
         clips = _make_clip_analyses(1)
         result = assign_clips(beat_analysis, clips, mode="best-match")
-        assert len(result["assignments"]) == 1
+        assert len(result.assignments) == 1
 
 
 class TestMoreBeatsThanClips:
@@ -269,14 +266,14 @@ class TestMoreBeatsThanClips:
         # Last assignment's beat_index + beat_count should be < len(beats)
         # or at least not more than total beats
         total_beats = len(beat_analysis["beats"])
-        last = result["assignments"][-1]
-        assert last["beat_index"] + last["beat_count"] <= total_beats
+        last = result.assignments[-1]
+        assert last.beat_index + last.beat_count <= total_beats
 
     def test_video_ends_early_not_full_song(self, beat_analysis):
         clips = _make_clip_analyses(1)
         result = assign_clips(beat_analysis, clips)
-        last = result["assignments"][-1]
-        used_beats = last["beat_index"] + last["beat_count"]
+        last = result.assignments[-1]
+        used_beats = last.beat_index + last.beat_count
         total_beats = len(beat_analysis["beats"])
         assert used_beats < total_beats, \
             f"expected used_beats ({used_beats}) < total ({total_beats})"
@@ -289,19 +286,19 @@ class TestMoreClipsThanBeats:
         clips = _make_clip_analyses(6)   # each needs 4-8 beats, total ~24-48 beats
         result = assign_clips(beats, clips)
         # Should assign some clips but not all
-        total_beats_needed = sum(a["beat_count"] for a in result["assignments"])
+        total_beats_needed = sum(a.beat_count for a in result.assignments)
         assert total_beats_needed <= len(beats["beats"])
         # At least one clip assigned (there's room for at least 1 clip needing 4 beats)
-        assert len(result["assignments"]) >= 1
+        assert len(result.assignments) >= 1
 
     def test_single_clip_needs_more_than_available(self):
         """When a single clip needs more beats than available, assigns what it can."""
         beats = _make_beat_analysis(3)  # only 3 beats
         clips = _make_clip_analyses(1)
         result = assign_clips(beats, clips)
-        assert len(result["assignments"]) == 1
+        assert len(result.assignments) == 1
         # beat_count clamped to available beats
-        assert result["assignments"][0]["beat_count"] <= 3
+        assert result.assignments[0].beat_count <= 3
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +318,7 @@ class TestBeatCountComputation:
         }
         result = assign_clips(beats, clips)
         # 3.5s / 0.5s per beat = 7 beats
-        assert result["assignments"][0]["beat_count"] == 7
+        assert result.assignments[0].beat_count == 7
 
     def test_short_clip_gets_min_beats(self):
         """Very short exciting segment gets clamped to min_beats."""
@@ -334,7 +331,7 @@ class TestBeatCountComputation:
             }
         }
         result = assign_clips(beats, clips, min_beats=4, max_beats=8)
-        assert result["assignments"][0]["beat_count"] == 4
+        assert result.assignments[0].beat_count == 4
 
     def test_long_clip_gets_max_beats(self):
         """Very long exciting segment gets clamped to max_beats."""
@@ -347,21 +344,21 @@ class TestBeatCountComputation:
             }
         }
         result = assign_clips(beats, clips, min_beats=4, max_beats=8)
-        assert result["assignments"][0]["beat_count"] == 8
+        assert result.assignments[0].beat_count == 8
 
     def test_min_beats_override(self):
         """--min-beats override works."""
         beats = _make_beat_analysis(32)
         clips = _make_clip_analyses(1)
         result = assign_clips(beats, clips, min_beats=6, max_beats=8)
-        assert result["assignments"][0]["beat_count"] >= 6
+        assert result.assignments[0].beat_count >= 6
 
     def test_max_beats_override(self):
         """--max-beats override works."""
         beats = _make_beat_analysis(32)
         clips = _make_clip_analyses(1)
         result = assign_clips(beats, clips, min_beats=4, max_beats=5)
-        assert result["assignments"][0]["beat_count"] <= 5
+        assert result.assignments[0].beat_count <= 5
 
 
 # ---------------------------------------------------------------------------
@@ -382,11 +379,11 @@ class TestSymmetricPadding:
             }
         }
         result = assign_clips(beats, clips, min_beats=6, max_beats=6)
-        a = result["assignments"][0]
+        a = result.assignments[0]
         # Original exciting: 4.0–6.0 (2s). Slot = 6 beats * 0.5s = 3.0s.
         # Extra = 1.0s, padded 0.5s each side → 3.5–6.5
-        assert a["source_start"] == pytest.approx(3.5, abs=0.1)
-        assert a["source_end"] == pytest.approx(6.5, abs=0.1)
+        assert a.source_start == pytest.approx(3.5, abs=0.1)
+        assert a.source_end == pytest.approx(6.5, abs=0.1)
 
     def test_does_not_pad_below_zero(self):
         """Padding doesn't go below 0.0."""
@@ -399,8 +396,8 @@ class TestSymmetricPadding:
             }
         }
         result = assign_clips(beats, clips, min_beats=6, max_beats=6)
-        a = result["assignments"][0]
-        assert a["source_start"] >= 0.0
+        a = result.assignments[0]
+        assert a.source_start >= 0.0
 
     def test_exciting_longer_than_slot_not_trimmed(self):
         """If exciting segment is longer than slot, source_start/end keep original."""
@@ -413,10 +410,10 @@ class TestSymmetricPadding:
             }
         }
         result = assign_clips(beats, clips, min_beats=4, max_beats=4)
-        a = result["assignments"][0]
+        a = result.assignments[0]
         # 4 beats = 2.0s, exciting = 4.0s. Should keep original.
-        assert a["source_start"] == 1.0
-        assert a["source_end"] == 5.0
+        assert a.source_start == 1.0
+        assert a.source_end == 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -434,16 +431,16 @@ class TestBeatEnergy:
             }
         }
         result = assign_clips(beat_analysis, clips, min_beats=4, max_beats=4)
-        a = result["assignments"][0]
+        a = result.assignments[0]
         # Compute expected from fixture: beats 0-3 energy values
         energies = beat_analysis["energy"][:4]
         expected = sum(energies) / 4
-        assert a["beat_energy"] == pytest.approx(expected, abs=0.01)
+        assert a.beat_energy == pytest.approx(expected, abs=0.01)
 
     def test_beat_energy_between_0_and_1(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        for a in result["assignments"]:
-            assert 0.0 <= a["beat_energy"] <= 1.0
+        for a in result.assignments:
+            assert 0.0 <= a.beat_energy <= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -453,20 +450,20 @@ class TestBeatEnergy:
 class TestConsecutiveNoGaps:
     def test_clips_abut_each_other(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        for i in range(1, len(result["assignments"])):
-            prev = result["assignments"][i - 1]
-            curr = result["assignments"][i]
+        for i in range(1, len(result.assignments)):
+            prev = result.assignments[i - 1]
+            curr = result.assignments[i]
             # Next clip's beat_index = previous beat_index + previous beat_count
-            assert curr["beat_index"] == prev["beat_index"] + prev["beat_count"], \
+            assert curr.beat_index == prev.beat_index + prev.beat_count, \
                 f"gap between assignment {i-1} and {i}"
 
     def test_first_clip_starts_at_beat_0(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        assert result["assignments"][0]["beat_index"] == 0
+        assert result.assignments[0].beat_index == 0
 
     def test_first_target_start_is_zero(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        assert result["assignments"][0]["target_start"] == 0.0
+        assert result.assignments[0].target_start == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -476,9 +473,9 @@ class TestConsecutiveNoGaps:
 class TestJSONSerializable:
     def test_output_is_json_serializable(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
-        dumped = json.dumps(result)
+        dumped = json.dumps(result.to_dict())
         reloaded = json.loads(dumped)
-        assert reloaded == result
+        assert reloaded == result.to_dict()
 
 
 # ---------------------------------------------------------------------------

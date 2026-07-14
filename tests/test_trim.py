@@ -9,6 +9,7 @@ import click.testing
 import pytest
 
 from recap.cli import main
+from recap.plan import Plan, Assignment
 from recap.trim import _deterministic_name, trim_plan
 
 
@@ -19,51 +20,51 @@ from recap.trim import _deterministic_name, trim_plan
 @pytest.fixture
 def sample_plan():
     """A minimal assignment plan with two clips."""
-    return {
-        "bpm": 120.0,
-        "assignments": [
-            {
-                "clip": "/fake/clips/ski.mp4",
-                "source_start": 2.5,
-                "source_end": 5.5,
-                "target_start": 0.0,
-                "beat_index": 0,
-                "beat_count": 6,
-                "beat_energy": 0.4,
-                "motion_score": 0.9,
-            },
-            {
-                "clip": "/fake/clips/jump.mp4",
-                "source_start": 1.0,
-                "source_end": 3.5,
-                "target_start": 3.0,
-                "beat_index": 6,
-                "beat_count": 5,
-                "beat_energy": 0.7,
-                "motion_score": 0.7,
-            },
+    return Plan(
+        bpm=120.0,
+        assignments=[
+            Assignment(
+                clip="/fake/clips/ski.mp4",
+                source_start=2.5,
+                source_end=5.5,
+                target_start=0.0,
+                beat_index=0,
+                beat_count=6,
+                beat_energy=0.4,
+                motion_score=0.9,
+            ),
+            Assignment(
+                clip="/fake/clips/jump.mp4",
+                source_start=1.0,
+                source_end=3.5,
+                target_start=3.0,
+                beat_index=6,
+                beat_count=5,
+                beat_energy=0.7,
+                motion_score=0.7,
+            ),
         ],
-    }
+    )
 
 
 @pytest.fixture
 def single_clip_plan():
     """Plan with a single clip."""
-    return {
-        "bpm": 120.0,
-        "assignments": [
-            {
-                "clip": "/fake/clips/lone.mp4",
-                "source_start": 3.0,
-                "source_end": 6.0,
-                "target_start": 0.0,
-                "beat_index": 0,
-                "beat_count": 6,
-                "beat_energy": 0.5,
-                "motion_score": 0.8,
-            },
+    return Plan(
+        bpm=120.0,
+        assignments=[
+            Assignment(
+                clip="/fake/clips/lone.mp4",
+                source_start=3.0,
+                source_end=6.0,
+                target_start=0.0,
+                beat_index=0,
+                beat_count=6,
+                beat_energy=0.5,
+                motion_score=0.8,
+            ),
         ],
-    }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +110,11 @@ class TestDeterministicName:
 
 class TestTrimPlanUnit:
     def test_empty_plan_returns_summary(self, tmp_path):
-        plan = {"bpm": 120.0, "assignments": []}
-        result = trim_plan(plan, output_dir=str(tmp_path))
-        assert result["_trim_summary"]["succeeded"] == 0
-        assert result["_trim_summary"]["failed"] == 0
-        assert result["_trim_summary"]["errors"] == []
+        plan = Plan(bpm=120.0, assignments=[])
+        result_plan, summary = trim_plan(plan, output_dir=str(tmp_path))
+        assert summary["succeeded"] == 0
+        assert summary["failed"] == 0
+        assert summary["errors"] == []
 
     def test_adds_trim_key_on_success(self, tmp_path, sample_plan):
         out = tmp_path / "trims"
@@ -124,13 +125,13 @@ class TestTrimPlanUnit:
             return task["trim_path"]
 
         with mock.patch("recap.trim._trim_one", side_effect=fake_trim_one):
-            result = trim_plan(sample_plan, output_dir=str(out))
-        assert result["_trim_summary"]["succeeded"] == 2
-        assert result["_trim_summary"]["failed"] == 0
-        assert len(result["_trim_summary"]["errors"]) == 0
-        for a in result["assignments"]:
-            assert "trim" in a
-            assert a["trim"].endswith(".mp4")
+            result_plan, summary = trim_plan(sample_plan, output_dir=str(out))
+        assert summary["succeeded"] == 2
+        assert summary["failed"] == 0
+        assert len(summary["errors"]) == 0
+        for a in result_plan.assignments:
+            assert a.trim is not None
+            assert a.trim.endswith(".mp4")
 
     def test_single_clip_failure_does_not_block_others(self, tmp_path, sample_plan):
         out = tmp_path / "trims"
@@ -144,15 +145,15 @@ class TestTrimPlanUnit:
             return task["trim_path"]
 
         with mock.patch("recap.trim._trim_one", side_effect=fake_trim_one):
-            result = trim_plan(sample_plan, output_dir=str(out))
-        assert result["_trim_summary"]["succeeded"] == 1
-        assert result["_trim_summary"]["failed"] == 1
-        assert len(result["_trim_summary"]["errors"]) == 1
-        assert result["_trim_summary"]["errors"][0]["clip"] == "/fake/clips/ski.mp4"
+            result_plan, summary = trim_plan(sample_plan, output_dir=str(out))
+        assert summary["succeeded"] == 1
+        assert summary["failed"] == 1
+        assert len(summary["errors"]) == 1
+        assert summary["errors"][0]["clip"] == "/fake/clips/ski.mp4"
         # ski.mp4 failed → no trim key
-        assert "trim" not in result["assignments"][0]
+        assert result_plan.assignments[0].trim is None
         # jump.mp4 succeeded → has trim key
-        assert "trim" in result["assignments"][1]
+        assert result_plan.assignments[1].trim is not None
         assert call_count[0] == 2  # both clips attempted
 
     def test_trim_paths_are_inside_output_dir(self, tmp_path, sample_plan):
@@ -162,9 +163,9 @@ class TestTrimPlanUnit:
             return task["trim_path"]
 
         with mock.patch("recap.trim._trim_one", side_effect=fake_trim_one):
-            result = trim_plan(sample_plan, output_dir=str(out))
-        for a in result["assignments"]:
-            assert str(out) in a["trim"]
+            result_plan, summary = trim_plan(sample_plan, output_dir=str(out))
+        for a in result_plan.assignments:
+            assert str(out) in a.trim
 
     def test_trim_paths_are_deterministic(self, tmp_path, sample_plan):
         out1 = tmp_path / "trims1"
@@ -174,10 +175,10 @@ class TestTrimPlanUnit:
             return task["trim_path"]
 
         with mock.patch("recap.trim._trim_one", side_effect=fake_trim_one):
-            r1 = trim_plan(sample_plan, output_dir=str(out1))
-            r2 = trim_plan(sample_plan, output_dir=str(out2))
-        paths1 = [a["trim"] for a in r1["assignments"]]
-        paths2 = [a["trim"] for a in r2["assignments"]]
+            r1, _ = trim_plan(sample_plan, output_dir=str(out1))
+            r2, _ = trim_plan(sample_plan, output_dir=str(out2))
+        paths1 = [a.trim for a in r1.assignments]
+        paths2 = [a.trim for a in r2.assignments]
 
         # Relative filenames (last component) should be identical
         for p1, p2 in zip(paths1, paths2):
@@ -190,13 +191,13 @@ class TestTrimPlanUnit:
             return task["trim_path"]
 
         with mock.patch("recap.trim._trim_one", side_effect=fake_trim_one):
-            result = trim_plan(single_clip_plan, output_dir=str(out))
-        assert result["bpm"] == 120.0
-        a = result["assignments"][0]
-        assert a["clip"] == "/fake/clips/lone.mp4"
-        assert a["source_start"] == 3.0
-        assert a["source_end"] == 6.0
-        assert a["target_start"] == 0.0
+            result_plan, summary = trim_plan(single_clip_plan, output_dir=str(out))
+        assert result_plan.bpm == 120.0
+        a = result_plan.assignments[0]
+        assert a.clip == "/fake/clips/lone.mp4"
+        assert a.source_start == 3.0
+        assert a.source_end == 6.0
+        assert a.target_start == 0.0
 
     def test_creates_output_dir_if_missing(self, tmp_path, single_clip_plan):
         out = tmp_path / "nonexistent" / "trims"
@@ -205,9 +206,9 @@ class TestTrimPlanUnit:
             return task["trim_path"]
 
         with mock.patch("recap.trim._trim_one", side_effect=fake_trim_one):
-            result = trim_plan(single_clip_plan, output_dir=str(out))
+            result_plan, summary = trim_plan(single_clip_plan, output_dir=str(out))
         assert out.exists()
-        assert result["_trim_summary"]["succeeded"] == 1
+        assert summary["succeeded"] == 1
 
     def test_all_failures_summary(self, tmp_path, sample_plan):
         out = tmp_path / "trims"
@@ -215,10 +216,10 @@ class TestTrimPlanUnit:
             raise RuntimeError("boom")
 
         with mock.patch("recap.trim._trim_one", side_effect=fake_trim_one):
-            result = trim_plan(sample_plan, output_dir=str(out))
-        assert result["_trim_summary"]["succeeded"] == 0
-        assert result["_trim_summary"]["failed"] == 2
-        assert len(result["_trim_summary"]["errors"]) == 2
+            result_plan, summary = trim_plan(sample_plan, output_dir=str(out))
+        assert summary["succeeded"] == 0
+        assert summary["failed"] == 2
+        assert len(summary["errors"]) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +326,7 @@ class TestCLITrim:
     def test_trim_with_valid_plan(self, tmp_path, sample_plan):
         """End-to-end mock: write plan file, run trim, check stdout."""
         plan_file = tmp_path / "plan.json"
-        plan_file.write_text(json.dumps(sample_plan))
+        plan_file.write_text(json.dumps(sample_plan.to_dict()))
         out_dir = tmp_path / "trims"
 
         def fake_trim_one(task):
@@ -340,15 +341,13 @@ class TestCLITrim:
             ])
             assert result.exit_code == 0
             output = _extract_json(result.output)
-            assert output["_trim_summary"]["succeeded"] == 2
-            assert output["_trim_summary"]["failed"] == 0
             for a in output["assignments"]:
                 assert "trim" in a
 
     def test_trim_default_output_dir(self, tmp_path, sample_plan):
         """Default --output-dir is recap-trims/ relative to CWD."""
         plan_file = tmp_path / "plan.json"
-        plan_file.write_text(json.dumps(sample_plan))
+        plan_file.write_text(json.dumps(sample_plan.to_dict()))
 
         def fake_trim_one(task):
             Path(task["trim_path"]).write_text("fake mp4")
@@ -393,8 +392,6 @@ class TestCLITrim:
             "trim", "--plan", str(plan_file),
         ])
         assert result.exit_code == 0
-        output = _extract_json(result.output)
-        assert output["_trim_summary"]["succeeded"] == 0
 
 
 def _extract_json(mixed_output: str) -> dict:
@@ -451,29 +448,29 @@ class TestTrimIntegration:
         subprocess.run(gen_cmd, capture_output=True, check=True)
         assert source.exists()
 
-        plan = {
-            "bpm": 120.0,
-            "assignments": [
-                {
-                    "clip": str(source),
-                    "source_start": 0.5,
-                    "source_end": 2.0,
-                    "target_start": 0.0,
-                    "beat_index": 0,
-                    "beat_count": 3,
-                    "beat_energy": 0.5,
-                    "motion_score": 0.8,
-                }
+        plan = Plan(
+            bpm=120.0,
+            assignments=[
+                Assignment(
+                    clip=str(source),
+                    source_start=0.5,
+                    source_end=2.0,
+                    target_start=0.0,
+                    beat_index=0,
+                    beat_count=3,
+                    beat_energy=0.5,
+                    motion_score=0.8,
+                )
             ],
-        }
+        )
 
         out_dir = tmp_path / "trims"
-        result = trim_plan(plan, output_dir=str(out_dir), verbose=False)
+        result_plan, summary = trim_plan(plan, output_dir=str(out_dir), verbose=False)
 
-        assert result["_trim_summary"]["succeeded"] == 1
-        assert result["_trim_summary"]["failed"] == 0
+        assert summary["succeeded"] == 1
+        assert summary["failed"] == 0
 
-        trim_path = result["assignments"][0]["trim"]
+        trim_path = result_plan.assignments[0].trim
         assert Path(trim_path).exists()
 
         # Verify trimmed file is valid MP4 with expected duration (~1.5s)
@@ -490,38 +487,38 @@ class TestTrimIntegration:
 
     def test_trim_with_failure(self, tmp_path, check_ffmpeg):
         """A nonexistent source file is reported as failure without crashing."""
-        plan = {
-            "bpm": 120.0,
-            "assignments": [
-                {
-                    "clip": str(tmp_path / "does_not_exist.mp4"),
-                    "source_start": 0.5,
-                    "source_end": 2.0,
-                    "target_start": 0.0,
-                    "beat_index": 0,
-                    "beat_count": 3,
-                    "beat_energy": 0.5,
-                    "motion_score": 0.8,
-                },
-                {
-                    "clip": str(tmp_path / "also_missing.mp4"),
-                    "source_start": 1.0,
-                    "source_end": 3.0,
-                    "target_start": 3.0,
-                    "beat_index": 3,
-                    "beat_count": 4,
-                    "beat_energy": 0.5,
-                    "motion_score": 0.6,
-                },
+        plan = Plan(
+            bpm=120.0,
+            assignments=[
+                Assignment(
+                    clip=str(tmp_path / "does_not_exist.mp4"),
+                    source_start=0.5,
+                    source_end=2.0,
+                    target_start=0.0,
+                    beat_index=0,
+                    beat_count=3,
+                    beat_energy=0.5,
+                    motion_score=0.8,
+                ),
+                Assignment(
+                    clip=str(tmp_path / "also_missing.mp4"),
+                    source_start=1.0,
+                    source_end=3.0,
+                    target_start=3.0,
+                    beat_index=3,
+                    beat_count=4,
+                    beat_energy=0.5,
+                    motion_score=0.6,
+                ),
             ],
-        }
+        )
 
         out_dir = tmp_path / "trims"
-        result = trim_plan(plan, output_dir=str(out_dir), verbose=False)
+        result_plan, summary = trim_plan(plan, output_dir=str(out_dir), verbose=False)
 
-        assert result["_trim_summary"]["succeeded"] == 0
-        assert result["_trim_summary"]["failed"] == 2
-        assert len(result["_trim_summary"]["errors"]) == 2
+        assert summary["succeeded"] == 0
+        assert summary["failed"] == 2
+        assert len(summary["errors"]) == 2
         # Neither has trim key
-        for a in result["assignments"]:
-            assert "trim" not in a
+        for a in result_plan.assignments:
+            assert a.trim is None

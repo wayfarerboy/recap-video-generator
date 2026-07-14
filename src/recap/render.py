@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from recap.plan import Plan
+
 
 def _add_prop(parent: ET.Element, name: str, value: str) -> ET.Element:
     el = ET.SubElement(parent, "property", {"name": name})
@@ -44,7 +46,7 @@ def _seconds_to_timecode(seconds: float) -> str:
 
 
 def render_kdenlive(
-    plan: dict[str, Any],
+    plan: Plan,
     music_path: str,
     output_ratio: str = "16:9",
     *,
@@ -57,16 +59,12 @@ def render_kdenlive(
     if output_ratio not in ("16:9", "9:16"):
         raise ValueError(f"Unknown output ratio: {output_ratio!r}. Use '16:9' or '9:16'.")
 
-    assignments: list[dict[str, Any]] = plan.get("assignments", [])
+    assignments = plan.assignments
 
     if output_ratio == "16:9":
         out_w, out_h = 1920, 1080
     else:
         out_w, out_h = 1080, 1920
-
-    plan_fps = plan.get("fps")
-    if plan_fps is not None:
-        fps = float(plan_fps)
 
     output_dir_path = Path(output_dir).resolve() if output_dir else Path.cwd()
     root_dir_str = str(output_dir_path)
@@ -115,7 +113,7 @@ def render_kdenlive(
     chain_dur_seconds: list[float] = []
     chain_kdenlive_ids: list[int] = []
     for a in assignments:
-        resource = a["clip"]
+        resource = a.clip
 
         # Use relative paths; resolve for probe/hash
         res_path = Path(resource)
@@ -223,16 +221,16 @@ def render_kdenlive(
     timeline_pos = 0.0
     for i in range(num_video_clips):
         a = assignments[i]
-        target = a.get("target_start", 0)
+        target = a.target_start
 
         # Beat slot duration: how long this clip occupies on the timeline
         if i + 1 < num_video_clips:
-            next_target = assignments[i + 1].get("target_start", 0)
+            next_target = assignments[i + 1].target_start
             slot_dur = next_target - target
         else:
             slot_dur = music_dur - target
 
-        source_start = a.get("source_start", 0)
+        source_start = a.source_start
         # Absorb any gap before this clip by pulling its in-point back
         # and extending its slot duration so the clip fills the gap
         # on the timeline.  This avoids blank entries in playlist2 while

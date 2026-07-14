@@ -8,29 +8,29 @@ Trims are raw extracts — no crop, rotation, or scale baked in.
 from __future__ import annotations
 
 import hashlib
-import json
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, TextIO
 
+from recap.plan import Plan
+
 
 def trim_plan(
-    plan: dict[str, Any],
+    plan: Plan,
     output_dir: str | Path = "recap-trims",
     *,
     max_workers: int | None = None,
     verbose: bool = False,
     progress_file: TextIO | None = None,
-) -> dict[str, Any]:
+) -> tuple[Plan, dict[str, Any]]:
     """Trim every clip in the assignment plan and update with trim paths.
 
     Parameters
     ----------
-    plan : dict
-        Assignment plan (output of ``recap assign``). Must have an
-        ``assignments`` key with a list of clip entries.
+    plan : Plan
+        Assignment plan (output of ``recap assign``).
     output_dir : str or Path
         Directory to write trimmed MP4 files.  Created if missing.
     max_workers : int or None
@@ -43,10 +43,9 @@ def trim_plan(
 
     Returns
     -------
-    dict
-        The updated plan with a ``trim`` key in each assignment pointing
-        to the trimmed file path.  Also includes a ``_trim_summary`` key
-        with ``succeeded``, ``failed``, and list of ``errors``.
+    tuple[Plan, dict]
+        The updated plan with ``.trim`` paths set on assignments, and a
+        trim summary dict with ``succeeded``, ``failed``, and ``errors``.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -54,16 +53,16 @@ def trim_plan(
     if progress_file is None:
         progress_file = sys.stderr
 
-    assignments: list[dict[str, Any]] = plan.get("assignments", [])
+    assignments = plan.assignments
     if not assignments:
-        return {**plan, "_trim_summary": {"succeeded": 0, "failed": 0, "errors": []}}
+        return plan, {"succeeded": 0, "failed": 0, "errors": []}
 
     # Build task list
     tasks: list[dict[str, Any]] = []
     for i, entry in enumerate(assignments):
-        source_path = entry["clip"]
-        start = entry["source_start"]
-        end = entry["source_end"]
+        source_path = entry.clip
+        start = entry.source_start
+        end = entry.source_end
         duration = round(end - start, 2)
         trim_filename = _deterministic_name(source_path, start, end)
         trim_path = output_dir / trim_filename
@@ -92,7 +91,7 @@ def trim_plan(
             idx = task["index"]
             try:
                 trim_path = future.result()
-                assignments[idx]["trim"] = trim_path
+                assignments[idx].trim = trim_path
                 succeeded += 1
                 if verbose:
                     print(f"  {succeeded}/{total} clips trimmed", file=progress_file)
@@ -109,9 +108,7 @@ def trim_plan(
         "failed": len(errors),
         "errors": errors,
     }
-    result = dict(plan)
-    result["_trim_summary"] = summary
-    return result
+    return plan, summary
 
 
 def _trim_one(task: dict[str, Any]) -> str:
