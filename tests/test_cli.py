@@ -1,6 +1,7 @@
 """Tests for recap CLI."""
 
 import subprocess
+from pathlib import Path
 from unittest import mock
 
 import click.testing
@@ -127,32 +128,6 @@ class TestBeatsCommand:
 # ---------------------------------------------------------------------------
 
 
-def _make_beat_analysis(bpm=120.0, num_beats=32):
-    """Return a synthetic beat analysis dict."""
-    beat_interval = 60.0 / bpm
-    beats = [i * beat_interval for i in range(num_beats)]
-    energy = [round(0.5 + 0.3 * (i % 4) / 4, 4) for i in range(num_beats)]
-    return {"bpm": bpm, "beats": beats, "energy": energy}
-
-
-def _make_clip_analyses(num_clips=3):
-    """Return synthetic batch analysis results dict."""
-    results = {}
-    for i in range(num_clips):
-        score = round(0.9 - i * 0.2, 2)
-        results[f"/fake/clip_{i}.mp4"] = {
-            "most_exciting": {"start": 1.0, "end": 3.0, "score": score},
-            "motion_scores": [score] * 90,
-            "orientation": "landscape",
-        }
-    return {
-        "processed": num_clips,
-        "skipped": 0,
-        "errors": [],
-        "results": results,
-    }
-
-
 def _make_assignment_plan(bpm=120.0, clips_dir="/fake"):
     """Return a synthetic assignment Plan with 3 clips."""
     return Plan(
@@ -224,42 +199,28 @@ class TestCreatePipeline:
         result = runner.invoke(main, ["create"])
         assert result.exit_code != 0
 
-    def test_pipeline_runs_all_stages_no_transcode(self, tmp_path, monkeypatch):
-        """End-to-end: create --no-transcode calls 4 stages in order."""
+    def test_pipeline_run_called_with_config(self, tmp_path, monkeypatch):
+        """create unpacks flags into PipelineConfig and calls pipeline.run."""
         clips_dir = tmp_path / "clips"
         clips_dir.mkdir()
         music_file = tmp_path / "song.mp3"
         music_file.write_text("fake audio")
         output_path = tmp_path / "recap.kdenlive"
 
-        beat_data = _make_beat_analysis()
-        clip_results = _make_clip_analyses(3)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
 
-        kdenlive_xml = '<?xml version="1.0"?>\n<mlt version="1.1"></mlt>'
+        run_calls = []
 
-        call_order = []
+        def fake_run(config, stop_after=None):
+            run_calls.append((config, stop_after))
+            from recap.pipeline import PipelineResult
+            return PipelineResult(
+                plan=assign_plan,
+                kdenlive_path=config.output_path,
+                warnings=[],
+            )
 
-        def fake_analyze_directory(directory, force=False, transcode=False):
-            call_order.append(("analyze_directory", directory, force, transcode))
-            return dict(clip_results)
-
-        def fake_detect_beats(filepath):
-            call_order.append(("detect_beats", filepath))
-            return dict(beat_data)
-
-        def fake_assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", **kwargs):
-            call_order.append(("assign_clips", mode))
-            return assign_plan
-
-        def fake_render_kdenlive(plan, music_path, output_ratio="16:9", **kwargs):
-            call_order.append(("render_kdenlive", music_path, output_ratio))
-            return kdenlive_xml
-
-        monkeypatch.setattr("recap.batch.analyze_directory", fake_analyze_directory)
-        monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
-        monkeypatch.setattr("recap.assign.assign_clips", fake_assign_clips)
-        monkeypatch.setattr("recap.render.render_kdenlive", fake_render_kdenlive)
+        monkeypatch.setattr("recap.pipeline.run", fake_run)
 
         runner = click.testing.CliRunner()
         result = runner.invoke(main, [
@@ -275,86 +236,67 @@ class TestCreatePipeline:
 
         assert result.exit_code == 0, f"CLI failed: {result.output}\nstderr: {result.exc_info}"
 
-        # Verify each stage ran (4 stages, no transcode)
-        assert len(call_order) == 4
-        assert call_order[0] == ("analyze_directory", str(clips_dir), True, False)
-        assert call_order[1] == ("detect_beats", str(music_file))
-        assert call_order[2] == ("assign_clips", "best-match")
-        assert call_order[3] == ("render_kdenlive", str(music_file), "9:16")
+        # Verify pipeline.run was called once
+        assert len(run_calls) == 1
+        config, stop_after = run_calls[0]
+        assert stop_after is None  # create runs full pipeline
 
-        # Verify output file was written
-        assert output_path.exists()
-        assert output_path.read_text() == kdenlive_xml
+        # Verify PipelineConfig was built correctly from CLI flags
+        from pathlib import Path
+        assert config.clips_dir == clips_dir
+        assert config.music_path == music_file
+        assert config.mode == "best-match"
+        assert config.ratio == "9:16"
+        assert config.seed == 42  # default
+        assert config.force is True
+        assert config.fps == 25.0  # default
+        assert config.transcode is False  # --no-transcode
+        assert config.output_path == output_path
+        assert config.min_beats == 4  # default
+        assert config.max_beats == 8  # default
 
-        # Verify progress messages
-        assert "Stage 1/4" in result.output
-        assert "Stage 2/4" in result.output
-        assert "Stage 3/4" in result.output
-        assert "Stage 4/4" in result.output
+        # Verify success output
         assert "Done!" in result.output
+        assert "Wrote" in result.output
 
-    def test_pipeline_runs_all_five_stages_with_transcode(self, tmp_path, monkeypatch):
-        """End-to-end: create (default, transcode on) calls 5 stages."""
+    def test_pipeline_defaults_with_transcode(self, tmp_path, monkeypatch):
+        """create default (transcode on) passes transcode=True to PipelineConfig."""
         clips_dir = tmp_path / "clips"
         clips_dir.mkdir()
         music_file = tmp_path / "song.mp3"
         music_file.write_text("fake audio")
-        output_path = tmp_path / "recap.kdenlive"
 
-        beat_data = _make_beat_analysis()
-        clip_results = _make_clip_analyses(3)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
 
-        kdenlive_xml = '<?xml version="1.0"?>\n<mlt version="1.1"></mlt>'
+        run_calls = []
 
-        call_order = []
+        def fake_run(config, stop_after=None):
+            run_calls.append((config, stop_after))
+            from recap.pipeline import PipelineResult
+            return PipelineResult(
+                plan=assign_plan,
+                kdenlive_path=config.output_path,
+                warnings=[],
+            )
 
-        def fake_analyze_directory(directory, force=False, transcode=False):
-            call_order.append(("analyze_directory", directory, force, transcode))
-            r = dict(clip_results)
-            r["transcode"] = {"new": 3, "skipped": 0, "errors": []}
-            return r
-
-        def fake_detect_beats(filepath):
-            call_order.append(("detect_beats", filepath))
-            return dict(beat_data)
-
-        def fake_assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", **kwargs):
-            call_order.append(("assign_clips", mode))
-            return assign_plan
-
-        def fake_render_kdenlive(plan, music_path, output_ratio="16:9", **kwargs):
-            call_order.append(("render_kdenlive", music_path, output_ratio))
-            return kdenlive_xml
-
-        monkeypatch.setattr("recap.batch.analyze_directory", fake_analyze_directory)
-        monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
-        monkeypatch.setattr("recap.assign.assign_clips", fake_assign_clips)
-        monkeypatch.setattr("recap.render.render_kdenlive", fake_render_kdenlive)
+        monkeypatch.setattr("recap.pipeline.run", fake_run)
 
         runner = click.testing.CliRunner()
         result = runner.invoke(main, [
             "create",
             str(clips_dir),
             str(music_file),
-            "-o", str(output_path),
             "--mode", "best-match",
         ])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}\nstderr: {result.exc_info}"
 
-        # Verify each stage ran (5 stages with transcode)
-        assert len(call_order) == 4
-        assert call_order[0] == ("analyze_directory", str(clips_dir), False, True)
-        assert call_order[1] == ("detect_beats", str(music_file))
-        assert call_order[2] == ("assign_clips", "best-match")
+        assert len(run_calls) == 1
+        config, stop_after = run_calls[0]
+        assert config.transcode is True  # default, no --no-transcode
+        assert config.mode == "best-match"
+        assert stop_after is None
 
-        # Verify progress messages (5-stage numbering)
-        assert "Stage 1/5" in result.output
-        assert "Stage 3/5" in result.output
-        assert "Stage 4/5" in result.output
-        assert "Stage 5/5" in result.output
-        assert "Transcoded:" in result.output
         assert "Done!" in result.output
 
     def test_pipeline_defaults_no_transcode(self, tmp_path, monkeypatch):
@@ -364,23 +306,16 @@ class TestCreatePipeline:
         music_file = tmp_path / "song.mp3"
         music_file.write_text("fake audio")
 
-        beat_data = _make_beat_analysis()
-        clip_results = _make_clip_analyses(1)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
 
-        call_order = []
+        run_calls = []
 
-        monkeypatch.setattr("recap.batch.analyze_directory",
-                           lambda directory, force=False, transcode=False: (
-                               call_order.append(("analyze", force, transcode)) or dict(clip_results)))
-        monkeypatch.setattr("recap.audio.detect_beats",
-                           lambda filepath: (call_order.append(("beats",)) or dict(beat_data)))
-        monkeypatch.setattr("recap.assign.assign_clips",
-                           lambda beat_analysis, clip_analyses, mode="shuffled-tiers", **kw:
-                           (call_order.append(("assign", mode)) or assign_plan))
-        monkeypatch.setattr("recap.render.render_kdenlive",
-                           lambda plan, music_path, output_ratio="16:9", **kw:
-                           (call_order.append(("render", output_ratio)) or "<xml/>"))
+        def fake_run(config, stop_after=None):
+            run_calls.append(config)
+            from recap.pipeline import PipelineResult
+            return PipelineResult(plan=assign_plan, warnings=[])
+
+        monkeypatch.setattr("recap.pipeline.run", fake_run)
 
         runner = click.testing.CliRunner()
         result = runner.invoke(main, [
@@ -388,13 +323,11 @@ class TestCreatePipeline:
         ])
 
         assert result.exit_code == 0
-        assert call_order[0] == ("analyze", False, False)
-        # shuffled-tiers is default mode
-        assert ("assign", "shuffled-tiers") in call_order
-        # 16:9 is default ratio
-        assert ("render", "16:9") in call_order
-        # trim is no longer called
-        assert not any(c[0] == "trim" for c in call_order)
+        assert len(run_calls) == 1
+        config = run_calls[0]
+        assert config.transcode is False
+        assert config.mode == "shuffled-tiers"
+        assert config.ratio == "16:9"
 
     def test_no_clips_aborts_with_error(self, tmp_path, monkeypatch):
         """When no clips are found, exits non-zero."""
@@ -403,8 +336,10 @@ class TestCreatePipeline:
         music_file = tmp_path / "song.mp3"
         music_file.write_text("fake audio")
 
-        empty_batch = {"processed": 0, "skipped": 0, "errors": [], "results": {}, "transcode": None}
-        monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: empty_batch)
+        def fake_run(config, stop_after=None):
+            raise ValueError("No clips found")
+
+        monkeypatch.setattr("recap.pipeline.run", fake_run)
 
         runner = click.testing.CliRunner()
         result = runner.invoke(main, ["create", str(clips_dir), str(music_file)])
@@ -418,21 +353,19 @@ class TestCreatePipeline:
         music_file = tmp_path / "song.mp3"
         music_file.write_text("fake audio")
 
-        beat_data = _make_beat_analysis()
-        clip_results = _make_clip_analyses(1)
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-
         trim_called = []
+
+        def fake_run(config, stop_after=None):
+            from recap.pipeline import PipelineResult
+            return PipelineResult(plan=assign_plan, warnings=[])
 
         def fake_trim(*a, **kw):
             trim_called.append(True)
             return assign_plan
 
-        monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
-        monkeypatch.setattr("recap.audio.detect_beats", lambda *a, **kw: dict(beat_data))
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: assign_plan)
+        monkeypatch.setattr("recap.pipeline.run", fake_run)
         monkeypatch.setattr("recap.trim.trim_plan", fake_trim)
-        monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()
         result = runner.invoke(main, [
@@ -441,101 +374,30 @@ class TestCreatePipeline:
         assert result.exit_code == 0
         assert len(trim_called) == 0, "trim_plan should not be called"
 
-    def test_music_caching_used_when_not_forced(self, tmp_path, monkeypatch):
-        """When --force is not set and music cache exists, detect_beats is not called."""
-        clips_dir = tmp_path / "clips"
-        clips_dir.mkdir()
-        music_file = tmp_path / "song.mp3"
-        music_file.write_text("fake audio")
-
-        # Pre-populate music cache
-        cache_dir = clips_dir / ".recap-cache"
-        cache_dir.mkdir()
-        cache_file = cache_dir / "song_beats.json"
-        cache_file.write_text('{"bpm": 140.0, "beats": [0.0, 0.43], "energy": [0.5, 0.5]}')
-
-        beat_calls = []
-
-        def fake_detect_beats(fp):
-            beat_calls.append(fp)
-            return {"bpm": 120.0, "beats": [0.0, 0.5], "energy": [0.5, 0.5]}
-
-        clip_results = _make_clip_analyses(1)
-        assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-
-        monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
-        monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: assign_plan)
-        monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
-
-        runner = click.testing.CliRunner()
-        result = runner.invoke(main, ["create", str(clips_dir), str(music_file)])
-        assert result.exit_code == 0
-        assert len(beat_calls) == 0  # cached, not called
-        assert "Using cached beat analysis" in result.output
-
-    def test_force_reanalyzes_music(self, tmp_path, monkeypatch):
-        """When --force is set, music cache is ignored."""
-        clips_dir = tmp_path / "clips"
-        clips_dir.mkdir()
-        music_file = tmp_path / "song.mp3"
-        music_file.write_text("fake audio")
-
-        # Pre-populate music cache
-        cache_dir = clips_dir / ".recap-cache"
-        cache_dir.mkdir()
-        cache_file = cache_dir / "song_beats.json"
-        cache_file.write_text('{"bpm": 140.0, "beats": [0.0], "energy": [0.5]}')
-
-        beat_calls = []
-        beat_data = _make_beat_analysis()
-
-        def fake_detect_beats(fp):
-            beat_calls.append(fp)
-            return dict(beat_data)
-
-        clip_results = _make_clip_analyses(1)
-        assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
-
-        monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(clip_results))
-        monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: assign_plan)
-        monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
-
-        runner = click.testing.CliRunner()
-        result = runner.invoke(main, [
-            "create", str(clips_dir), str(music_file), "--force",
-        ])
-        assert result.exit_code == 0
-        assert len(beat_calls) == 1  # force bypassed cache
-        assert "Using cached beat analysis" not in result.output
-
     def test_warns_on_clip_analysis_errors(self, tmp_path, monkeypatch):
-        """When batch analysis has errors, they are printed as warnings but pipeline continues."""
+        """When pipeline returns warnings, they are printed."""
         clips_dir = tmp_path / "clips"
         clips_dir.mkdir()
         music_file = tmp_path / "song.mp3"
         music_file.write_text("fake audio")
 
-        batch_with_errors = {
-            "processed": 2,
-            "skipped": 0,
-            "errors": [
-                {"file": "broken.mp4", "error": "Cannot decode"},
-            ],
-            "results": {
-                "/good1.mp4": _make_clip_analyses(1)["results"]["/fake/clip_0.mp4"],
-                "/good2.mp4": _make_clip_analyses(2)["results"]["/fake/clip_1.mp4"],
-            },
-        }
-
-        beat_data = _make_beat_analysis()
         assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
 
-        monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: dict(batch_with_errors))
-        monkeypatch.setattr("recap.audio.detect_beats", lambda *a, **kw: dict(beat_data))
-        monkeypatch.setattr("recap.assign.assign_clips", lambda *a, **kw: assign_plan)
-        monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
+        from recap.pipeline import PipelineResult, PipelineWarning
+
+        def fake_run(config, stop_after=None):
+            return PipelineResult(
+                plan=assign_plan,
+                warnings=[
+                    PipelineWarning(
+                        stage="analyze_clips",
+                        message="Cannot decode",
+                        source="broken.mp4",
+                    ),
+                ],
+            )
+
+        monkeypatch.setattr("recap.pipeline.run", fake_run)
 
         runner = click.testing.CliRunner()
         result = runner.invoke(main, ["create", str(clips_dir), str(music_file)])

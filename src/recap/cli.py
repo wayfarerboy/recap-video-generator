@@ -137,47 +137,37 @@ def assign(clips, music, mode, min_beats, max_beats, seed, force):
     """
     from pathlib import Path
 
-    from recap.assign import assign_clips
     from recap.audio import detect_beats
-    from recap.batch import analyze_directory
+    from recap.pipeline import PipelineConfig, run
 
-    # 1. Load beat analysis
-    music_path = Path(music)
-    cache_dir = music_path.parent / ".recap-cache"
-    music_cache_name = music_path.stem + "_beats.json"
-    music_cache_path = cache_dir / music_cache_name
-
-    if not force and music_cache_path.exists():
-        beat_data = json.loads(music_cache_path.read_text())
-    else:
-        beat_data = detect_beats(str(music_path))
-        cache_dir.mkdir(exist_ok=True)
-        music_cache_path.write_text(json.dumps(beat_data, indent=2))
-
-    # 2. Load clip analyses (uses batch cache)
-    batch = analyze_directory(str(Path(clips)), force=force)
-    if batch["errors"]:
-        for err in batch["errors"]:
-            click.echo(f"WARNING: {err['file']} — {err['error']}", err=True)
-
-    clip_data = batch["results"]
-
-    if not clip_data:
-        empty_plan = Plan(bpm=beat_data["bpm"])
-        click.echo(json.dumps(empty_plan.to_dict(), indent=2))
-        return
-
-    # 3. Assign
-    plan = assign_clips(
-        beat_analysis=beat_data,
-        clip_analyses=clip_data,
+    config = PipelineConfig(
+        clips_dir=Path(clips),
+        music_path=Path(music),
         mode=mode,
+        seed=seed,
+        force=force,
+        transcode=False,
         min_beats=min_beats,
         max_beats=max_beats,
-        seed=seed,
     )
 
-    click.echo(json.dumps(plan.to_dict(), indent=2))
+    try:
+        result = run(config, stop_after="assign")
+    except ValueError as exc:
+        if "No clips found" in str(exc):
+            # Output an empty plan with the music BPM.
+            music_path = Path(music)
+            beat_data = detect_beats(str(music_path))
+            empty_plan = Plan(bpm=beat_data["bpm"])
+            click.echo(json.dumps(empty_plan.to_dict(), indent=2))
+            return
+        raise
+
+    for w in result.warnings:
+        label = w.source or "unknown"
+        click.echo(f"WARNING: {label} — {w.message}", err=True)
+
+    click.echo(json.dumps(result.plan.to_dict(), indent=2))
 
 
 @main.command()
@@ -420,98 +410,30 @@ def create(clips_dir, music_file, output_path, mode, ratio, seed, force, fps, no
     """
     from pathlib import Path
 
-    from recap.assign import assign_clips
-    from recap.audio import detect_beats
-    from recap.batch import analyze_directory
-    from recap.render import render_kdenlive
+    from recap.pipeline import PipelineConfig, run
 
-    clips_path = Path(clips_dir)
-    music_path = Path(music_file)
-    do_transcode = not no_transcode
-    transcode_fps = int(fps) if fps == int(fps) else fps
-
-    # Stage 1: Transcode + analyze clips
-    if do_transcode:
-        click.echo("Stage 1/5: Transcoding clips to CFR...")
-    else:
-        click.echo("Stage 1/4: Analyzing clips...")
-
-    batch = analyze_directory(
-        str(clips_path),
+    config = PipelineConfig(
+        clips_dir=Path(clips_dir),
+        music_path=Path(music_file),
+        mode=mode,
+        ratio=ratio,
+        seed=seed,
         force=force,
-        transcode=do_transcode,
-    )
-    if batch["errors"]:
-        for err in batch["errors"]:
-            click.echo(f"  WARNING: {err['file']} — {err['error']}", err=True)
-
-    tc = batch.get("transcode")
-    if tc:
-        tc_info = []
-        if tc["new"]:
-            tc_info.append(f"Transcoded: {tc['new']}")
-        if tc["skipped"]:
-            tc_info.append(f"Transcode skipped: {tc['skipped']}")
-        if tc["errors"]:
-            tc_info.append(f"Transcode errors: {len(tc['errors'])}")
-        click.echo(f"  {', '.join(tc_info)}")
-        for e in tc["errors"]:
-            click.echo(f"  WARNING: {e['file']} — {e['error']}", err=True)
-    click.echo(
-        f"  Analyzed: {batch['processed']}, "
-        f"Skipped (cached): {batch['skipped']}, "
-        f"Errors: {len(batch['errors'])}"
+        fps=float(fps),
+        transcode=not no_transcode,
+        output_path=Path(output_path),
     )
 
-    clip_data = batch["results"]
-    if not clip_data:
-        click.echo("No clips found. Exiting.", err=True)
+    try:
+        result = run(config)
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
         sys.exit(1)
 
-    # Stage 2: Analyze music
-    stage = 3 if do_transcode else 2
-    total = 5 if do_transcode else 4
-    click.echo(f"Stage {stage}/{total}: Analyzing music...")
-    cache_dir = clips_path / ".recap-cache"
-    music_cache_name = music_path.stem + "_beats.json"
-    music_cache_path = cache_dir / music_cache_name
+    for w in result.warnings:
+        label = w.source or "unknown"
+        click.echo(f"WARNING: {label} — {w.message}", err=True)
 
-    if not force and music_cache_path.exists():
-        beat_data = json.loads(music_cache_path.read_text())
-        click.echo("  Using cached beat analysis.")
-    else:
-        beat_data = detect_beats(str(music_path))
-        cache_dir.mkdir(exist_ok=True)
-        music_cache_path.write_text(json.dumps(beat_data, indent=2))
-    click.echo(
-        f"  Detected {beat_data['bpm']:.0f} BPM, "
-        f"{len(beat_data['beats'])} beats."
-    )
-
-    # Stage 3/4: Assign clips to beats
-    stage_assign = 4 if do_transcode else 3
-    click.echo(f"Stage {stage_assign}/{total}: Assigning clips to beats (mode: {mode})...")
-    plan = assign_clips(
-        beat_analysis=beat_data,
-        clip_analyses=clip_data,
-        mode=mode,
-        seed=seed,
-    )
-    click.echo(f"  Assigned {len(plan.assignments)} clip(s) to beat slots.")
-
-    # Stage 4/5: Render kdenlive project
-    stage_render = 5 if do_transcode else 4
-    click.echo(f"Stage {stage_render}/{total}: Rendering kdenlive project...")
-    output_dir_resolved = Path(output_path).resolve().parent
-    xml = render_kdenlive(
-        plan,
-        music_path=str(music_path),
-        output_ratio=ratio,
-        fps=float(fps),
-        output_dir=str(output_dir_resolved),
-    )
-    Path(output_path).write_text(xml, encoding="utf-8")
-    click.echo(f"  Wrote {output_path}")
-
+    click.echo(f"Wrote {output_path}")
     click.echo("\nDone! Open the project in kdenlive:")
     click.echo(f"  kdenlive {output_path}")
