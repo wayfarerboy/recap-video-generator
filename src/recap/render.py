@@ -1,7 +1,9 @@
-"""Kdenlive project XML generation (MLT-based, doc version 1.1).
+"""Kdenlive project XML generation matching kdenlive's native format.
 
-Generates a valid ``.kdenlive`` project file from an assignment plan.
-Matches kdenlive 23.04+ structure with chains, control_uuid, docproperties.
+Generates a valid ``.kdenlive`` project file that mirrors the structure
+kdenlive produces when saving: ``<chain>`` elements for all bin items,
+separate sub-tractors for video/audio, a black background producer, and
+``qtblend`` transitions for video compositing.
 """
 
 from __future__ import annotations
@@ -17,81 +19,10 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 
-def _frames_to_timecode(frames: int, fps: float) -> str:
-    """Convert frame count to HH:MM:SS.fff timecode string."""
-    seconds = frames / fps
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = seconds % 60
-    return f"{h:02d}:{m:02d}:{s:06.3f}"
-
-
 def _add_prop(parent: ET.Element, name: str, value: str) -> ET.Element:
     el = ET.SubElement(parent, "property", {"name": name})
     el.text = value
     return el
-
-
-def _make_chain(
-    mlt: ET.Element,
-    chain_id: int,
-    resource: str,
-    duration_frames: int,
-    fps: float,
-    is_audio: bool = False,
-    video_meta: dict[str, Any] | None = None,
-) -> ET.Element:
-    """Create a <chain> element for a media source."""
-    chain = ET.SubElement(mlt, "chain")
-    chain.set("id", f"chain{chain_id}")
-    chain.set("out", _frames_to_timecode(duration_frames - 1, fps))
-
-    _add_prop(chain, "length", str(duration_frames))
-    _add_prop(chain, "eof", "pause")
-    _add_prop(chain, "resource", resource)
-
-    if is_audio:
-        _add_prop(chain, "mlt_service", "avformat")
-        _add_prop(chain, "audio_index", "0")
-        _add_prop(chain, "video_index", "-1")
-        _add_prop(chain, "astream", "0")
-    else:
-        _add_prop(chain, "mlt_service", "avformat-novalidate")
-        _add_prop(chain, "audio_index", "1")
-        _add_prop(chain, "video_index", "0")
-        _add_prop(chain, "vstream", "0")
-        _add_prop(chain, "format", "3")
-        if video_meta:
-            if video_meta.get("width"):
-                _add_prop(chain, "meta.media.0.codec.width", str(video_meta["width"]))
-            if video_meta.get("height"):
-                _add_prop(chain, "meta.media.0.codec.height", str(video_meta["height"]))
-            if video_meta.get("fps"):
-                _add_prop(chain, "meta.media.0.stream.frame_rate", str(video_meta["fps"]))
-            if video_meta.get("rotate") is not None:
-                _add_prop(chain, "meta.media.0.codec.rotate", str(video_meta["rotate"]))
-            _add_prop(chain, "meta.media.0.codec.pix_fmt", "yuv420p")
-            _add_prop(chain, "meta.media.0.codec.colorspace", "709")
-            _add_prop(chain, "meta.media.0.codec.color_trc", "1")
-            _add_prop(chain, "meta.media.0.codec.name", "h264")
-        _add_prop(chain, "meta.media.frame_rate_num", str(int(fps)))
-        _add_prop(chain, "meta.media.frame_rate_den", "1")
-        _add_prop(chain, "meta.media.colorspace", "709")
-        _add_prop(chain, "meta.media.sample_aspect_num", "1")
-        _add_prop(chain, "meta.media.sample_aspect_den", "1")
-
-    _add_prop(chain, "seekable", "1")
-
-    # kdenlive-specific metadata
-    _add_prop(chain, "kdenlive:folderid", "-1")
-    _add_prop(chain, "kdenlive:id", str(chain_id))
-    _add_prop(chain, "kdenlive:control_uuid", f"{{{uuid.uuid4()}}}")
-    _add_prop(chain, "kdenlive:clip_type", "0" if is_audio else "1")
-    _add_prop(chain, "kdenlive:file_size", str(os.path.getsize(resource) if os.path.exists(resource) else 0))
-    _add_prop(chain, "kdenlive:file_hash", _file_hash(resource))
-    _add_prop(chain, "kdenlive:monitorPosition", "0")
-
-    return chain
 
 
 def _file_hash(path: str) -> str:
@@ -104,6 +35,14 @@ def _file_hash(path: str) -> str:
     return "0" * 32
 
 
+def _seconds_to_timecode(seconds: float) -> str:
+    """Convert seconds to HH:MM:SS.fff timecode string."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+
 def render_kdenlive(
     plan: dict[str, Any],
     music_path: str,
@@ -114,30 +53,7 @@ def render_kdenlive(
     orientation_cache: dict[str, str] | None = None,
     root_dir: str | Path = "/",
 ) -> str:
-    """Generate a ``.kdenlive`` project XML string.
-
-    Parameters
-    ----------
-    plan : dict
-        Assignment plan with an ``assignments`` list.
-    music_path : str
-        Path to the music file.
-    output_ratio : str
-        ``"16:9"`` (default) or ``"9:16"``.
-    fps : float
-        Timeline frame rate (default 30).
-    output_dir : str or Path or None
-        If given, resource paths are made relative to this directory.
-    orientation_cache : dict[str, str] or None
-        Mapping of original clip paths → ``"portrait"`` or ``"landscape"``.
-    root_dir : str or Path
-        Value for the mlt ``root`` attribute (default ``"/"``).
-
-    Returns
-    -------
-    str
-        Complete XML document as a string (UTF-8).
-    """
+    """Generate a ``.kdenlive`` project XML string."""
     if output_ratio not in ("16:9", "9:16"):
         raise ValueError(f"Unknown output ratio: {output_ratio!r}. Use '16:9' or '9:16'.")
 
@@ -152,153 +68,284 @@ def render_kdenlive(
     if plan_fps is not None:
         fps = float(plan_fps)
 
+    output_dir_path = Path(output_dir).resolve() if output_dir else Path.cwd()
+    root_dir_str = str(output_dir_path)
     seq_uuid = f"{{{uuid.uuid4()}}}"
+    master_uuid = f"{{{uuid.uuid4()}}}"
     now_ms = str(int(time.time() * 1000))
-    profile_name = f"HD {out_w}x{out_h} {fps}fps"
+    profile_name = f"HD {out_h}p {fps:.0f} fps"
     da_num, da_den = _aspect_fraction(out_w, out_h)
     fps_num, fps_den = _float_to_fraction(fps)
 
     # ---- Root -----------------------------------------------------------
-    mlt = ET.Element("mlt")
-    mlt.set("LC_NUMERIC", "C")
-    mlt.set("producer", "main_bin")
-    mlt.set("root", "")
-    mlt.set("version", "7.37.0")
-
-    # Profile
-    profile = ET.SubElement(mlt, "profile")
-    profile.set("description", profile_name)
-    profile.set("width", str(out_w))
-    profile.set("height", str(out_h))
-    profile.set("display_aspect_num", str(da_num))
-    profile.set("display_aspect_den", str(da_den))
-    profile.set("sample_aspect_num", "1")
-    profile.set("sample_aspect_den", "1")
-    profile.set("frame_rate_num", str(fps_num))
-    profile.set("frame_rate_den", str(fps_den))
-    profile.set("progressive", "1")
-    profile.set("colorspace", "709")
-
-    # ---- Chains (media sources) ------------------------------------------
-    next_chain_id = 0
-
-    # Video clips
-    for i, a in enumerate(assignments):
-        resource = a.get("trim", a["clip"])
-        if output_dir is not None:
-            resource = str(Path(os.path.relpath(resource, output_dir)))
-
-        duration_s = a.get("source_end", 0) - a.get("source_start", 0)
-        dur_frames = max(1, int(duration_s * fps))
-
-        clip_w, clip_h = _probe_dimensions(a.get("trim", a["clip"]))
-        orientation = _resolve_orientation(a.get("clip", ""), orientation_cache)
-
-        video_meta = {
-            "width": clip_w if clip_w else out_w,
-            "height": clip_h if clip_h else out_h,
-            "fps": fps,
-            "rotate": 90 if orientation == "portrait" else 0,
-        }
-
-        _make_chain(mlt, next_chain_id, resource, dur_frames, fps, is_audio=False, video_meta=video_meta)
-        a["_chain_id"] = next_chain_id
-        a["_dur_frames"] = dur_frames
-        a["_orientation"] = orientation
-        a["_clip_w"] = clip_w
-        a["_clip_h"] = clip_h
-        next_chain_id += 1
-
-    # Music chain
-    music_resource = music_path
-    if output_dir is not None:
-        music_resource = str(Path(os.path.relpath(music_path, output_dir)))
-    music_duration = _probe_duration(music_path)
-    music_frames = max(1, int(music_duration * fps))
-    music_chain_id = next_chain_id
-    _make_chain(mlt, music_chain_id, music_resource, music_frames, fps, is_audio=True)
-    next_chain_id += 1
-
-    # ---- Playlists -------------------------------------------------------
-    video_playlist = ET.SubElement(mlt, "playlist")
-    video_playlist.set("id", "playlist0")
-
-    audio_playlist = ET.SubElement(mlt, "playlist")
-    audio_playlist.set("id", "playlist1")
-
-    # Fill video playlist entries (continuous, no blanks)
-    for a in assignments:
-        ET.SubElement(video_playlist, "entry", {
-            "in": "00:00:00.000",
-            "out": _frames_to_timecode(a["_dur_frames"] - 1, fps),
-            "producer": f"chain{a['_chain_id']}",
-        })
-
-    # Audio entry
-    ET.SubElement(audio_playlist, "entry", {
-        "in": "00:00:00.000",
-        "out": _frames_to_timecode(music_frames - 1, fps),
-        "producer": f"chain{music_chain_id}",
+    mlt = ET.Element("mlt", {
+        "LC_NUMERIC": "C",
+        "producer": "main_bin",
+        "root": root_dir_str,
+        "version": "7.39.0",
     })
 
-    # ---- Tractor ---------------------------------------------------------
-    total_frames = sum(a["_dur_frames"] for a in assignments)
-    tractor = ET.SubElement(mlt, "tractor")
-    tractor.set("id", "tractor0")
-    tractor.set("in", "00:00:00.000")
-    tractor.set("out", _frames_to_timecode(total_frames - 1, fps))
+    ET.SubElement(mlt, "profile", {
+        "colorspace": "709",
+        "description": profile_name,
+        "display_aspect_den": str(da_den),
+        "display_aspect_num": str(da_num),
+        "frame_rate_den": str(fps_den),
+        "frame_rate_num": str(fps_num),
+        "height": str(out_h),
+        "progressive": "1",
+        "sample_aspect_den": "1",
+        "sample_aspect_num": "1",
+        "width": str(out_w),
+    })
 
-    _add_prop(tractor, "kdenlive:trackheight", "69")
+    # ---- Music duration (needed early for timing) -----------------------
+    music_dur = _probe_duration(music_path)
+    music_tc = _seconds_to_timecode(music_dur)
+    total_frames = max(1, int(music_dur * fps))
 
-    # Video track (hide audio portion)
-    ET.SubElement(tractor, "track", {"hide": "audio", "producer": "playlist0"})
-    # Audio track (hide video portion)
-    ET.SubElement(tractor, "track", {"hide": "video", "producer": "playlist1"})
+    # ---- Video chains ---------------------------------------------------
+    chain_id = 0
+    chain_dur_seconds: list[float] = []
+    for a in assignments:
+        resource = a.get("trim", a["clip"])
+        dur_s = a.get("source_end", 0) - a.get("source_start", 0)
+        chain_dur_seconds.append(dur_s)
+        dur_tc = _seconds_to_timecode(dur_s)
 
-    # ---- Sequence properties on tractor ----------------------------------
-    _add_prop(tractor, "kdenlive:duration", _frames_to_timecode(total_frames - 1, fps))
-    _add_prop(tractor, "kdenlive:maxduration", str(total_frames))
-    _add_prop(tractor, "kdenlive:clipname", "Sequence 1")
-    _add_prop(tractor, "kdenlive:description", "")
-    _add_prop(tractor, "kdenlive:uuid", seq_uuid)
-    _add_prop(tractor, "kdenlive:producer_type", "17")
-    _add_prop(tractor, "kdenlive:control_uuid", seq_uuid)
-    _add_prop(tractor, "kdenlive:id", str(next_chain_id))
-    _add_prop(tractor, "kdenlive:clip_type", "0")
-    _add_prop(tractor, "kdenlive:file_hash", "0" * 32)
-    _add_prop(tractor, "kdenlive:folderid", "-1")
-    _add_prop(tractor, "kdenlive:sequenceproperties.activeTrack", "3")
-    _add_prop(tractor, "kdenlive:sequenceproperties.audioTarget", "1")
-    _add_prop(tractor, "kdenlive:sequenceproperties.disablepreview", "0")
-    _add_prop(tractor, "kdenlive:sequenceproperties.documentuuid", seq_uuid)
-    _add_prop(tractor, "kdenlive:sequenceproperties.hasAudio", "1")
-    _add_prop(tractor, "kdenlive:sequenceproperties.hasVideo", "1")
-    _add_prop(tractor, "kdenlive:sequenceproperties.position", "0")
-    _add_prop(tractor, "kdenlive:sequenceproperties.scrollPos", "0")
-    _add_prop(tractor, "kdenlive:sequenceproperties.tracks", "4")
-    _add_prop(tractor, "kdenlive:sequenceproperties.tracksCount", "2")
-    _add_prop(tractor, "kdenlive:sequenceproperties.verticalzoom", "1")
-    _add_prop(tractor, "kdenlive:sequenceproperties.videoTarget", "2")
-    _add_prop(tractor, "kdenlive:sequenceproperties.zonein", "0")
-    _add_prop(tractor, "kdenlive:sequenceproperties.zoneout", str(total_frames))
-    _add_prop(tractor, "kdenlive:sequenceproperties.zoom", "8")
-    _add_prop(tractor, "kdenlive:sequenceproperties.groups", "[\n]\n")
+        # Use relative paths for trims
+        res_path = Path(resource)
+        res_abs = str(res_path)
+        file_h = _file_hash(str((output_dir_path / res_path).resolve()) if not res_path.is_absolute() else res_abs)
+        file_size = "0"
+        full_path = res_path if res_path.is_absolute() else (output_dir_path / res_path)
+        if full_path.exists():
+            file_size = str(full_path.stat().st_size)
 
-    # ---- Main bin playlist ------------------------------------------------
-    main_bin = ET.SubElement(mlt, "playlist")
-    main_bin.set("id", "main_bin")
+        chain = ET.SubElement(mlt, "chain", {"id": f"chain{chain_id}", "out": dur_tc})
+        _add_prop(chain, "length", str(max(1, int(dur_s * fps))))
+        _add_prop(chain, "eof", "pause")
+        _add_prop(chain, "resource", res_abs)
+        _add_prop(chain, "mlt_service", "avformat-novalidate")
+        _add_prop(chain, "seekable", "1")
+        _add_prop(chain, "audio_index", "1")
+        _add_prop(chain, "video_index", "0")
+        _add_prop(chain, "astream", "0")
+        _add_prop(chain, "kdenlive:folderid", "-1")
+        _add_prop(chain, "kdenlive:id", str(chain_id))
+        _add_prop(chain, "kdenlive:control_uuid", f"{{{uuid.uuid4()}}}")
+        _add_prop(chain, "kdenlive:clip_type", "0")
+        _add_prop(chain, "kdenlive:file_size", file_size)
+        _add_prop(chain, "kdenlive:file_hash", file_h)
+        _add_prop(chain, "kdenlive:monitorPosition", "0")
+        chain_id += 1
 
-    # Entry for the sequence (wrapper tractor)
-    ET.SubElement(main_bin, "entry", {
-        "producer": "tractor1",
+    num_video_clips = chain_id
+
+    # ---- Black background producer --------------------------------------
+    black_prod = ET.SubElement(mlt, "producer", {
+        "id": "producer0",
         "in": "00:00:00.000",
-        "out": _frames_to_timecode(total_frames - 1, fps),
+        "out": music_tc,
+    })
+    _add_prop(black_prod, "length", str(total_frames))
+    _add_prop(black_prod, "eof", "pause")
+    _add_prop(black_prod, "resource", "black")
+    _add_prop(black_prod, "mlt_service", "color")
+    _add_prop(black_prod, "mlt_image_format", "rgba")
+    _add_prop(black_prod, "kdenlive:id", str(chain_id + 1))
+
+    # ---- Music chain ----------------------------------------------------
+    music_path_obj = Path(music_path)
+    if not music_path_obj.is_absolute():
+        music_path_obj = output_dir_path / music_path_obj
+    music_abs = str(music_path_obj.resolve())
+    music_file_h = _file_hash(music_abs)
+    music_file_size = str(music_path_obj.stat().st_size) if music_path_obj.exists() else "0"
+
+    music_chain = ET.SubElement(mlt, "chain", {"id": f"chain{chain_id}", "out": music_tc})
+    _add_prop(music_chain, "length", str(total_frames))
+    _add_prop(music_chain, "eof", "pause")
+    _add_prop(music_chain, "resource", music_abs)
+    _add_prop(music_chain, "mlt_service", "avformat-novalidate")
+    _add_prop(music_chain, "seekable", "1")
+    _add_prop(music_chain, "audio_index", "0")
+    _add_prop(music_chain, "video_index", "-1")
+    _add_prop(music_chain, "astream", "0")
+    _add_prop(music_chain, "kdenlive:folderid", "-1")
+    _add_prop(music_chain, "kdenlive:id", str(chain_id))
+    _add_prop(music_chain, "kdenlive:control_uuid", f"{{{uuid.uuid4()}}}")
+    _add_prop(music_chain, "kdenlive:clip_type", "1")
+    _add_prop(music_chain, "kdenlive:file_size", music_file_size)
+    _add_prop(music_chain, "kdenlive:file_hash", music_file_h)
+    _add_prop(music_chain, "kdenlive:kextractor", "1")
+    _add_prop(music_chain, "kdenlive:monitorPosition", "0")
+    music_chain_id = chain_id
+    chain_id += 1
+
+    # ---- tractor0: music sub-tractor (hide="video") ---------------------
+    pl_a_music = ET.SubElement(mlt, "playlist", {"id": "playlist0"})
+    ET.SubElement(pl_a_music, "entry", {
+        "producer": f"chain{music_chain_id}",
+        "in": "00:00:00.000",
+        "out": music_tc,
+    })
+    pl_a_empty = ET.SubElement(mlt, "playlist", {"id": "playlist1"})
+    tractor0 = ET.SubElement(mlt, "tractor", {
+        "id": "tractor0",
+        "in": "00:00:00.000",
+        "out": music_tc,
+    })
+    ET.SubElement(tractor0, "track", {"producer": "playlist0", "hide": "video"})
+    ET.SubElement(tractor0, "track", {"producer": "playlist1", "hide": "video"})
+    _add_prop(tractor0, "kdenlive:audio_track", "1")
+    _add_prop(tractor0, "kdenlive:trackheight", "62")
+    _add_prop(tractor0, "kdenlive:timeline_active", "1")
+
+    # ---- tractor1: video sub-tractor (hide="audio") ---------------------
+    pl_video = ET.SubElement(mlt, "playlist", {"id": "playlist2"})
+    for i in range(num_video_clips):
+        dur_s = chain_dur_seconds[i]
+        ET.SubElement(pl_video, "entry", {
+            "producer": f"chain{i}",
+            "in": "00:00:00.000",
+            "out": _seconds_to_timecode(dur_s),
+        })
+    pl_v_empty = ET.SubElement(mlt, "playlist", {"id": "playlist3"})
+    tractor1 = ET.SubElement(mlt, "tractor", {
+        "id": "tractor1",
+        "in": "00:00:00.000",
+        "out": music_tc,
+    })
+    ET.SubElement(tractor1, "track", {"producer": "playlist2", "hide": "audio"})
+    ET.SubElement(tractor1, "track", {"producer": "playlist3", "hide": "audio"})
+    _add_prop(tractor1, "kdenlive:trackheight", "62")
+    _add_prop(tractor1, "kdenlive:timeline_active", "")
+    _add_prop(tractor1, "kdenlive:collapsed", "0")
+
+    # ---- tractor2: empty (hide="audio") ---------------------------------
+    pl_empty0 = ET.SubElement(mlt, "playlist", {"id": "playlist4"})
+    pl_empty1 = ET.SubElement(mlt, "playlist", {"id": "playlist5"})
+    tractor2 = ET.SubElement(mlt, "tractor", {
+        "id": "tractor2",
+        "in": "00:00:00.000",
+        "out": music_tc,
+    })
+    ET.SubElement(tractor2, "track", {"producer": "playlist4", "hide": "audio"})
+    ET.SubElement(tractor2, "track", {"producer": "playlist5", "hide": "audio"})
+    _add_prop(tractor2, "kdenlive:trackheight", "62")
+    _add_prop(tractor2, "kdenlive:timeline_active", "")
+
+    # ---- Master tractor (4 tracks: black + tractor0 + tractor1 + tractor2)
+    master = ET.SubElement(mlt, "tractor", {
+        "id": master_uuid,
+        "in": "00:00:00.000",
+        "out": music_tc,
+    })
+    ET.SubElement(master, "track", {"producer": "producer0"})
+    ET.SubElement(master, "track", {"producer": "tractor0"})
+    ET.SubElement(master, "track", {"producer": "tractor1"})
+    ET.SubElement(master, "track", {"producer": "tractor2"})
+
+    # Transitions: mix for empty, qtblend for music and video
+    t0 = ET.SubElement(master, "transition", {"id": "transition0"})
+    _add_prop(t0, "a_track", "0")
+    _add_prop(t0, "b_track", "1")
+    _add_prop(t0, "mlt_service", "mix")
+    _add_prop(t0, "kdenlive_id", "mix")
+    _add_prop(t0, "internal_added", "237")
+    _add_prop(t0, "always_active", "1")
+    _add_prop(t0, "accepts_blanks", "1")
+    _add_prop(t0, "sum", "1")
+
+    t1 = ET.SubElement(master, "transition", {"id": "transition1"})
+    _add_prop(t1, "a_track", "0")
+    _add_prop(t1, "b_track", "2")
+    _add_prop(t1, "compositing", "0")
+    _add_prop(t1, "distort", "0")
+    _add_prop(t1, "rotate_center", "0")
+    _add_prop(t1, "mlt_service", "qtblend")
+    _add_prop(t1, "kdenlive_id", "qtblend")
+    _add_prop(t1, "internal_added", "237")
+    _add_prop(t1, "always_active", "1")
+
+    t2 = ET.SubElement(master, "transition", {"id": "transition2"})
+    _add_prop(t2, "a_track", "0")
+    _add_prop(t2, "b_track", "3")
+    _add_prop(t2, "compositing", "0")
+    _add_prop(t2, "distort", "0")
+    _add_prop(t2, "rotate_center", "0")
+    _add_prop(t2, "mlt_service", "qtblend")
+    _add_prop(t2, "kdenlive_id", "qtblend")
+    _add_prop(t2, "internal_added", "237")
+    _add_prop(t2, "always_active", "1")
+
+    # Sequence properties on master tractor
+    _add_prop(master, "kdenlive:duration", music_tc)
+    _add_prop(master, "kdenlive:maxduration", str(total_frames))
+    _add_prop(master, "kdenlive:clipname", "Sequence 1")
+    _add_prop(master, "kdenlive:description", "")
+    _add_prop(master, "kdenlive:uuid", master_uuid)
+    _add_prop(master, "kdenlive:id", str(chain_id + 1))
+    _add_prop(master, "kdenlive:producer_type", "17")
+    _add_prop(master, "kdenlive:control_uuid", master_uuid)
+    _add_prop(master, "kdenlive:clip_type", "0")
+    _add_prop(master, "kdenlive:file_hash", "0" * 32)
+    _add_prop(master, "kdenlive:folderid", "-1")
+    _add_prop(master, "kdenlive:trackheight", "69")
+    _add_prop(master, "kdenlive:sequenceproperties.activeTrack", "0")
+    _add_prop(master, "kdenlive:sequenceproperties.audioTarget", "1")
+    _add_prop(master, "kdenlive:sequenceproperties.disablepreview", "0")
+    _add_prop(master, "kdenlive:sequenceproperties.documentuuid", seq_uuid)
+    _add_prop(master, "kdenlive:sequenceproperties.hasAudio", "1")
+    _add_prop(master, "kdenlive:sequenceproperties.hasVideo", "1")
+    _add_prop(master, "kdenlive:sequenceproperties.position", "0")
+    _add_prop(master, "kdenlive:sequenceproperties.scrollPos", "0")
+    _add_prop(master, "kdenlive:sequenceproperties.tracks", "4")
+    _add_prop(master, "kdenlive:sequenceproperties.tracksCount", "3")
+    _add_prop(master, "kdenlive:sequenceproperties.verticalzoom", "1")
+    _add_prop(master, "kdenlive:sequenceproperties.videoTarget", "2")
+    _add_prop(master, "kdenlive:sequenceproperties.zonein", "0")
+    _add_prop(master, "kdenlive:sequenceproperties.zoneout", str(total_frames))
+    _add_prop(master, "kdenlive:sequenceproperties.zoom", "8")
+    _add_prop(master, "kdenlive:sequenceproperties.groups", "[\n]\n")
+    _add_prop(master, "kdenlive:sequenceproperties.guides", "[\n]\n")
+
+    # Music chain entry in main_bin — use a separate chain49 (duplicate ref)
+    # The timeline uses chain48; the bin reference uses chain49.
+    chain49 = ET.SubElement(mlt, "chain", {"id": "chain49", "out": music_tc})
+    _add_prop(chain49, "resource", music_abs)
+
+    # ---- Main bin playlist ----------------------------------------------
+    main_bin = ET.SubElement(mlt, "playlist", {"id": "main_bin"})
+
+    # Video chains
+    for i in range(num_video_clips):
+        dur = _seconds_to_timecode(chain_dur_seconds[i])
+        ET.SubElement(main_bin, "entry", {
+            "producer": f"chain{i}",
+            "in": "00:00:00.000",
+            "out": dur,
+        })
+
+    # Sequence entry
+    ET.SubElement(main_bin, "entry", {
+        "producer": master_uuid,
+        "in": "00:00:00.000",
+        "out": music_tc,
+    })
+
+    # Music bin entry (chain49, not chain48)
+    ET.SubElement(main_bin, "entry", {
+        "producer": "chain49",
+        "in": "00:00:00.000",
+        "out": music_tc,
     })
 
     # Doc properties
     _add_prop(main_bin, "kdenlive:folder.-1.2", "Sequences")
     _add_prop(main_bin, "kdenlive:sequenceFolder", "2")
-    _add_prop(main_bin, "kdenlive:docproperties.activetimeline", seq_uuid)
+    _add_prop(main_bin, "kdenlive:docproperties.activetimeline", master_uuid)
     _add_prop(main_bin, "kdenlive:docproperties.audioChannels", "2")
     _add_prop(main_bin, "kdenlive:docproperties.binsort", "0")
     _add_prop(main_bin, "kdenlive:docproperties.browserurl", "")
@@ -306,96 +353,66 @@ def render_kdenlive(
     _add_prop(main_bin, "kdenlive:docproperties.enableTimelineZone", "0")
     _add_prop(main_bin, "kdenlive:docproperties.enableexternalproxy", "0")
     _add_prop(main_bin, "kdenlive:docproperties.enableproxy", "0")
-    _add_prop(main_bin, "kdenlive:docproperties.externalproxyparams", "")
     _add_prop(main_bin, "kdenlive:docproperties.generateimageproxy", "0")
     _add_prop(main_bin, "kdenlive:docproperties.generateproxy", "0")
     _add_prop(main_bin, "kdenlive:docproperties.kdenliveversion", "23.04.0")
-    _add_prop(main_bin, "kdenlive:docproperties.opensequences", seq_uuid)
-    _add_prop(main_bin, "kdenlive:docproperties.previewextension", "")
-    _add_prop(main_bin, "kdenlive:docproperties.previewparameters", "")
+    _add_prop(main_bin, "kdenlive:docproperties.opensequences", master_uuid)
     _add_prop(main_bin, "kdenlive:docproperties.profile", profile_name.lower().replace(" ", "_"))
-    _add_prop(main_bin, "kdenlive:docproperties.proxyextension", "")
     _add_prop(main_bin, "kdenlive:docproperties.proxyimageminsize", "2000")
     _add_prop(main_bin, "kdenlive:docproperties.proxyimagesize", "800")
     _add_prop(main_bin, "kdenlive:docproperties.proxyminsize", "1000")
-    _add_prop(main_bin, "kdenlive:docproperties.proxyparams", "")
     _add_prop(main_bin, "kdenlive:docproperties.proxyresize", "640")
     _add_prop(main_bin, "kdenlive:docproperties.renderexportaudio", "0")
     _add_prop(main_bin, "kdenlive:docproperties.renderfullcolorrange", "0")
     _add_prop(main_bin, "kdenlive:docproperties.rendermode", "0")
     _add_prop(main_bin, "kdenlive:docproperties.renderplay", "0")
+    _add_prop(main_bin, "kdenlive:docproperties.version", "1.1")
+    _add_prop(main_bin, "xml_retain", "1")
 
-    # ---- Wrapper tractor (MUST be last element) --------------------------
-    wrapper = ET.SubElement(mlt, "tractor")
-    wrapper.set("id", "tractor1")
-    wrapper.set("in", "00:00:00.000")
-    wrapper.set("out", _frames_to_timecode(total_frames - 1, fps))
+    # ---- Wrapper tractor ------------------------------------------------
+    wrapper = ET.SubElement(mlt, "tractor", {
+        "id": "tractor3",
+        "in": "00:00:00.000",
+        "out": music_tc,
+    })
     _add_prop(wrapper, "kdenlive:projectTractor", "1")
     _add_prop(wrapper, "kdenlive:uuid", f"{{{uuid.uuid4()}}}")
-    ET.SubElement(wrapper, "track", {"producer": "tractor0"})
+    ET.SubElement(wrapper, "track", {
+        "producer": master_uuid,
+        "in": "00:00:00.000",
+        "out": music_tc,
+    })
 
-    # ---- Serialize -------------------------------------------------------
+    # ---- Serialize ------------------------------------------------------
     ET.indent(mlt, space=" ")
     xml_body = ET.tostring(mlt, encoding="unicode")
     return '<?xml version="1.0" encoding="utf-8"?>\n' + xml_body
 
 
 # ---------------------------------------------------------------------------
-# Helpers (from original, mostly unchanged)
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_orientation(
-    clip_path: str,
-    orientation_cache: dict[str, str] | None,
-) -> str:
-    if not clip_path:
-        return "landscape"
-    if orientation_cache and clip_path in orientation_cache:
-        return orientation_cache[clip_path]
-    cached = _read_orientation_from_cache(clip_path)
-    if cached:
-        return cached
-    w, h = _probe_dimensions(clip_path)
-    if w > 0 and h > 0:
-        return "portrait" if h > w else "landscape"
-    return "landscape"
-
-
-def _read_orientation_from_cache(clip_path: str) -> str | None:
-    try:
-        clip = Path(clip_path).resolve()
-        cache_dir = clip.parent / ".recap-cache"
-        if not cache_dir.is_dir():
-            return None
-        digest = hashlib.sha256(str(clip).encode()).hexdigest()
-        cache_file = cache_dir / f"{digest}.json"
-        if not cache_file.exists():
-            return None
-        data = json.loads(cache_file.read_text())
-        return data.get("orientation")
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-
-
 def _probe_dimensions(video_path: str) -> tuple[int, int]:
+    """Return (width, height) of the first video stream, or (0, 0) on failure."""
     if not video_path or not Path(video_path).exists():
-        return (0, 0)
+        return 0, 0
     cmd = [
-        "ffprobe", "-v", "quiet",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
-        "-of", "csv=p=0",
+        "ffprobe", "-v", "quiet", "-print_format", "json",
+        "-show_streams", "-select_streams", "v:0",
         str(video_path),
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        if proc.returncode == 0 and proc.stdout.strip():
-            parts = proc.stdout.strip().split(",")
-            if len(parts) == 2:
-                return int(parts[0]), int(parts[1])
+        if proc.returncode != 0:
+            return 0, 0
+        data = json.loads(proc.stdout)
+        streams = data.get("streams", [])
+        if streams:
+            return streams[0].get("width", 0), streams[0].get("height", 0)
     except Exception:
         pass
-    return (0, 0)
+    return 0, 0
 
 
 def _probe_duration(audio_path: str) -> float:

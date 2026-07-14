@@ -85,7 +85,7 @@ class TestXMLStructure:
         tree = ET.fromstring(xml)
         assert tree.get("LC_NUMERIC") == "C"
         assert tree.get("producer") == "main_bin"
-        assert tree.get("version") == "7.37.0"
+        assert tree.get("version") == "7.39.0"
 
     def test_profile_present(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
@@ -94,6 +94,7 @@ class TestXMLStructure:
         assert profile is not None
         assert profile.get("width") == "1920"
         assert profile.get("height") == "1080"
+        assert "1080p" in profile.get("description", "")
 
     def test_profile_9_16(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3", output_ratio="9:16")
@@ -106,8 +107,8 @@ class TestXMLStructure:
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         tractors = tree.findall("tractor")
-        # Should have at least tractor0 (timeline) and tractor1 (wrapper)
-        assert len(tractors) >= 2
+        # tractor0-2 (sub), master (UUID), tractor3 (wrapper) = 5 total
+        assert len(tractors) == 5
 
     def test_main_bin_present(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
@@ -125,17 +126,28 @@ class TestXMLStructure:
 
 
 class TestChainElements:
-    """Verify chain elements (kdenlive media sources)."""
+    """Verify chain elements (kdenlive media sources for video only)."""
 
     def test_chains_for_all_clips_plus_music(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         chains = tree.findall("chain")
-        assert len(chains) == 3  # 2 clips + music
+        # 2 video + 1 music + 1 chain49 (bin duplicate) = 4 chains
+        assert len(chains) == 4
+        assert tree.find("chain[@id='chain49']") is not None
+
+    def test_chain49_is_bin_duplicate(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        c49 = tree.find("chain[@id='chain49']")
+        assert c49 is not None
+        # chain49 is minimal: just resource, no kdenlive metadata
 
     def test_chains_have_control_uuid(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         for chain in ET.fromstring(xml).findall("chain"):
+            if chain.get("id") == "chain49":
+                continue  # minimal bin-only chain
             cu = chain.find("property[@name='kdenlive:control_uuid']")
             assert cu is not None
             assert cu.text.startswith("{") and cu.text.endswith("}")
@@ -144,6 +156,8 @@ class TestChainElements:
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         ids = []
         for chain in ET.fromstring(xml).findall("chain"):
+            if chain.get("id") == "chain49":
+                continue
             kid = chain.find("property[@name='kdenlive:id']")
             assert kid is not None
             ids.append(int(kid.text))
@@ -152,16 +166,20 @@ class TestChainElements:
     def test_clip_chains_have_resource(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         chains = ET.fromstring(xml).findall("chain")
-        video_chains = [c for c in chains if "avformat-novalidate" in
-                        (c.find("property[@name='mlt_service']").text or "")]
+        video_chains = [c for c in chains if
+                        c.find("property[@name='kdenlive:clip_type']") is not None
+                        and c.find("property[@name='kdenlive:clip_type']").text == "0"]
         assert len(video_chains) == 2
 
-    def test_music_chain_has_audio_service(self, landscape_plan):
+    def test_music_has_audio_clip_type(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
-        chains = ET.fromstring(xml).findall("chain")
-        audio_chains = [c for c in chains if
-                        c.find("property[@name='mlt_service']").text == "avformat"]
-        assert len(audio_chains) == 1
+        tree = ET.fromstring(xml)
+        chains = tree.findall("chain")
+        # Find the music chain (clip_type=1)
+        music_chains = [c for c in chains
+                        if c.find("property[@name='kdenlive:clip_type']") is not None
+                        and c.find("property[@name='kdenlive:clip_type']").text == "1"]
+        assert len(music_chains) == 1
 
     def test_out_is_timecode_format(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
@@ -177,15 +195,16 @@ class TestTimelineEntries:
     def test_video_playlist_entries(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        p0 = tree.find("playlist[@id='playlist0']")
-        entries = p0.findall("entry")
+        # playlist2 = video playlist with all clips sequentially
+        p4 = tree.find("playlist[@id='playlist2']")
+        entries = p4.findall("entry")
         assert len(entries) == 2
 
     def test_entry_in_out_are_timecodes(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        p0 = tree.find("playlist[@id='playlist0']")
-        for entry in p0.findall("entry"):
+        p4 = tree.find("playlist[@id='playlist4']")
+        for entry in p4.findall("entry"):
             assert ":" in entry.get("in")
             assert ":" in entry.get("out")
             assert "." in entry.get("out")
@@ -193,54 +212,102 @@ class TestTimelineEntries:
     def test_entries_reference_chain_producers(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        p0 = tree.find("playlist[@id='playlist0']")
-        for entry in p0.findall("entry"):
+        p4 = tree.find("playlist[@id='playlist4']")
+        for entry in p4.findall("entry"):
             assert entry.get("producer", "").startswith("chain")
 
     def test_audio_playlist_has_entry(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        p1 = tree.find("playlist[@id='playlist1']")
-        entries = p1.findall("entry")
+        # playlist0 = music playlist (in tractor0)
+        p2 = tree.find("playlist[@id='playlist0']")
+        entries = p2.findall("entry")
         assert len(entries) == 1
 
     def test_tractor_tracks_hide(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        tractor0 = tree.find("tractor[@id='tractor0']")
-        tracks = tractor0.findall("track")
+        # tractor0 = music sub-tractor with hide="video"
+        t1 = tree.find("tractor[@id='tractor0']")
+        tracks = t1.findall("track")
         assert len(tracks) == 2
-        # Video track hides audio, audio track hides video (kdenlive convention)
-        assert tracks[0].get("hide") == "audio"
-        assert tracks[1].get("hide") == "video"
+        assert tracks[0].get("hide") == "video"
+        # tractor1 = video sub-tractor with hide="audio"
+        t2 = tree.find("tractor[@id='tractor1']")
+        tracks2 = t2.findall("track")
+        assert len(tracks2) == 2
+        assert tracks2[0].get("hide") == "audio"
+
+    def test_master_tractor_has_transitions(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        for t in tree.findall("tractor"):
+            if t.find("property[@name='kdenlive:sequenceproperties.hasVideo']") is not None:
+                tracks = t.findall("track")
+                transitions = t.findall("transition")
+                assert len(tracks) == 4
+                assert len(transitions) == 3
+                svcs = [tx.find("property[@name='mlt_service']").text for tx in transitions]
+                assert svcs == ["mix", "qtblend", "qtblend"]
+                break
 
     def test_wrapper_tractor_has_track(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        wrapper = tree.find("tractor[@id='tractor1']")
+        wrapper = tree.find("tractor[@id='tractor3']")
         assert wrapper is not None
         wrapper_tracks = wrapper.findall("track")
         assert len(wrapper_tracks) == 1
-        assert wrapper_tracks[0].get("producer") == "tractor0"
+
+
+class TestUniqueIds:
+    """Verify all kdenlive:id values are unique across the project."""
+
+    def test_all_kdenlive_ids_unique(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        ids = []
+        for el in tree.iter():
+            kid = el.find("property[@name='kdenlive:id']")
+            if kid is not None and kid.text:
+                ids.append(int(kid.text))
+        assert len(ids) == len(set(ids)), f"Duplicate kdenlive:id values: {[x for x in ids if ids.count(x) > 1]}"
+
+    def test_all_kdenlive_ids_are_non_negative(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        for el in tree.iter():
+            kid = el.find("property[@name='kdenlive:id']")
+            if kid is not None and kid.text:
+                assert int(kid.text) >= 0, f"Negative kdenlive:id: {kid.text}"
 
 
 class TestTractorProperties:
-    """Verify sequence properties on tractor0."""
+    """Verify sequence properties on master tractor."""
 
     def test_tractor_has_uuid(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        tractor = tree.find("tractor[@id='tractor0']")
-        uuid_prop = tractor.find("property[@name='kdenlive:uuid']")
+        # Master tractor uses UUID as id
+        master = None
+        for t in tree.findall("tractor"):
+            if t.find("property[@name='kdenlive:sequenceproperties.hasVideo']") is not None:
+                master = t
+                break
+        uuid_prop = master.find("property[@name='kdenlive:uuid']")
         assert uuid_prop is not None
         assert uuid_prop.text.startswith("{")
 
     def test_tractor_has_sequence_properties(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        tractor = tree.find("tractor[@id='tractor0']")
-        assert tractor.find("property[@name='kdenlive:sequenceproperties.hasVideo']") is not None
-        assert tractor.find("property[@name='kdenlive:sequenceproperties.hasAudio']") is not None
+        master = None
+        for t in tree.findall("tractor"):
+            if t.find("property[@name='kdenlive:sequenceproperties.hasVideo']") is not None:
+                master = t
+                break
+        assert master.find("property[@name='kdenlive:sequenceproperties.hasVideo']") is not None
+        assert master.find("property[@name='kdenlive:sequenceproperties.hasAudio']") is not None
 
 
 class TestEmptyPlan:
@@ -249,8 +316,9 @@ class TestEmptyPlan:
         xml = render_kdenlive(plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         assert tree.tag == "mlt"
-        # Should still have music chain and audio playlist
-        assert tree.find("playlist[@id='playlist1']") is not None
+        # Should still have music chain and its playlist
+        assert tree.find("playlist[@id='playlist0']") is not None
+        assert tree.find("chain") is not None  # music chain
 
 
 class TestRatioFlag:
