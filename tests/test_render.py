@@ -204,15 +204,15 @@ class TestTimelineEntries:
         entries = p1.findall("entry")
         assert len(entries) == 1
 
-    def test_tractor_tracks_hide_video(self, landscape_plan):
+    def test_tractor_tracks_hide(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         tractor0 = tree.find("tractor[@id='tractor0']")
         tracks = tractor0.findall("track")
         assert len(tracks) == 2
-        # Both should be hide="video" (kdenlive convention)
-        for t in tracks:
-            assert t.get("hide") == "video"
+        # Video track hides audio, audio track hides video (kdenlive convention)
+        assert tracks[0].get("hide") == "audio"
+        assert tracks[1].get("hide") == "video"
 
     def test_wrapper_tractor_has_track(self, landscape_plan):
         xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")

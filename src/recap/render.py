@@ -250,9 +250,9 @@ def render_kdenlive(
 
     _add_prop(tractor, "kdenlive:trackheight", "69")
 
-    # Video track
-    ET.SubElement(tractor, "track", {"hide": "video", "producer": "playlist0"})
-    # Audio track
+    # Video track (hide audio portion)
+    ET.SubElement(tractor, "track", {"hide": "audio", "producer": "playlist0"})
+    # Audio track (hide video portion)
     ET.SubElement(tractor, "track", {"hide": "video", "producer": "playlist1"})
 
     # ---- Sequence properties on tractor ----------------------------------
@@ -283,15 +283,6 @@ def render_kdenlive(
     _add_prop(tractor, "kdenlive:sequenceproperties.zoneout", str(total_frames))
     _add_prop(tractor, "kdenlive:sequenceproperties.zoom", "8")
     _add_prop(tractor, "kdenlive:sequenceproperties.groups", "[\n]\n")
-
-    # ---- Wrapper tractor -------------------------------------------------
-    wrapper = ET.SubElement(mlt, "tractor")
-    wrapper.set("id", "tractor1")
-    wrapper.set("in", "00:00:00.000")
-    wrapper.set("out", _frames_to_timecode(total_frames - 1, fps))
-    _add_prop(wrapper, "kdenlive:uuid", f"{{{uuid.uuid4()}}}")
-
-    ET.SubElement(wrapper, "track", {"producer": "tractor0"})
 
     # ---- Main bin playlist ------------------------------------------------
     main_bin = ET.SubElement(mlt, "playlist")
@@ -333,6 +324,15 @@ def render_kdenlive(
     _add_prop(main_bin, "kdenlive:docproperties.renderfullcolorrange", "0")
     _add_prop(main_bin, "kdenlive:docproperties.rendermode", "0")
     _add_prop(main_bin, "kdenlive:docproperties.renderplay", "0")
+
+    # ---- Wrapper tractor (MUST be last element) --------------------------
+    wrapper = ET.SubElement(mlt, "tractor")
+    wrapper.set("id", "tractor1")
+    wrapper.set("in", "00:00:00.000")
+    wrapper.set("out", _frames_to_timecode(total_frames - 1, fps))
+    _add_prop(wrapper, "kdenlive:projectTractor", "1")
+    _add_prop(wrapper, "kdenlive:uuid", f"{{{uuid.uuid4()}}}")
+    ET.SubElement(wrapper, "track", {"producer": "tractor0"})
 
     # ---- Serialize -------------------------------------------------------
     ET.indent(mlt, space=" ")
