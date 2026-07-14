@@ -332,10 +332,9 @@ class TestTimelineInOut:
         # source_start=2.5, in should match
         assert entry.get("in") == "00:00:02.500"
         # out uses source_start + slot_dur (beat-aligned), clamped to source
-        # file duration. slot = music_dur - target_start = 10.0s, so
-        # source_start + slot = 12.5, clamped to probed duration of fake
-        # file (10.0s fallback for missing file).
-        assert entry.get("out") == "00:00:10.000"
+        # file duration (10.0s fallback for missing file), then adjusted -1/fps
+        # for MLT inclusive-out semantics (frame at 'out' is played).
+        assert entry.get("out") == "00:00:09.967"
 
     def test_timeline_entry_has_kdenlive_id_child(self, trimming_plan):
         xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
@@ -369,8 +368,8 @@ class TestTimelineInOut:
             ct = chain.find("property[@name='kdenlive:clip_type']")
             if ct is not None and ct.text == "0":
                 out = chain.get("out")
-                # 10.0 seconds from fallback probe
-                assert out == "00:00:10.000", f"Expected 00:00:10.000, got {out}"
+                # 10.0 seconds from fallback probe, minus 1/fps for MLT inclusive out
+                assert out == "00:00:09.967", f"Expected 00:00:09.967, got {out}"
                 length_el = chain.find("property[@name='length']")
                 assert length_el is not None
                 # 10s * 30fps = 300
@@ -387,7 +386,7 @@ class TestTimelineInOut:
             prod = entry.get("producer", "")
             if prod.startswith("chain") and prod != "chain49":
                 assert entry.get("in") == "00:00:00.000"
-                # full probed duration = 10.0
+                # full probed duration = 10.0 (bin entry, not timeline chain)
                 assert entry.get("out") == "00:00:10.000"
                 return
         pytest.fail("Video main_bin entry not found")

@@ -101,7 +101,13 @@ def render_kdenlive(
 
     # ---- Music duration (needed early for timing) -----------------------
     music_dur = _probe_duration(music_path)
-    music_tc = _seconds_to_timecode(music_dur)
+    # MLT treats 'out' as inclusive: the frame at 'out' is played.
+    # We want the sequence to last exactly music_dur seconds, so the last
+    # frame is at music_dur - 1/fps.  Without this, every tractor and
+    # chain is one frame too long, accumulating drift across the project.
+    mlt_fps_inv = 1.0 / fps
+    music_mlt_out = music_dur - mlt_fps_inv
+    music_tc = _seconds_to_timecode(music_mlt_out)
     total_frames = max(1, int(music_dur * fps))
 
     # ---- Video chains ---------------------------------------------------
@@ -123,7 +129,8 @@ def render_kdenlive(
         # Full source duration (probed via ffprobe, fallback to 10.0)
         full_dur_s = _probe_duration(str(full_path))
         chain_dur_seconds.append(full_dur_s)
-        full_dur_tc = _seconds_to_timecode(full_dur_s)
+        # MLT inclusive out: the chain's last frame is at full_dur_s - 1/fps
+        full_dur_tc = _seconds_to_timecode(full_dur_s - mlt_fps_inv)
 
         chain = ET.SubElement(mlt, "chain", {"id": f"chain{chain_id}", "out": full_dur_tc})
         _add_prop(chain, "length", str(max(1, int(full_dur_s * fps))))
@@ -240,9 +247,15 @@ def render_kdenlive(
         # but clamp to the source file's probed duration so we never ask
         # MLT / Kdenlive to play past end-of-file (would cause silent
         # duration loss and cumulative beat drift).
-        out_seconds = min(source_start + slot_dur, chain_dur_seconds[i])
+        desired_out = min(source_start + slot_dur, chain_dur_seconds[i])
+        # MLT treats playlist entry 'out' as INCLUSIVE: the frame at
+        # 'out' is played.  Without this correction, every clip plays
+        # one extra frame (1/fps seconds), accumulating drift across
+        # the timeline.
+        out_seconds = max(source_start, desired_out - mlt_fps_inv)
         out_tc = _seconds_to_timecode(out_seconds)
-        actual_dur = out_seconds - source_start
+        # MLT timeline duration with inclusive out = out - in + 1/fps
+        actual_dur = out_seconds - source_start + mlt_fps_inv
         entry = ET.SubElement(pl_video, "entry", {
             "producer": f"chain{i}",
             "in": in_tc,
