@@ -1,0 +1,15 @@
+{
+  "parallel": {
+    "maxTasks": 12,
+    "concurrency": 4
+  },
+  "maxSubagentDepth": 3,
+  "subagents": {
+    "agentOverrides": {
+      "issue-handler": {
+        "model": "deepseek-v4-pro"
+      }
+    },
+    "disableBuiltins": false
+  }
+}
