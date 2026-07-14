@@ -208,8 +208,33 @@ def render_kdenlive(
 
     # ---- tractor1: video sub-tractor (hide="audio") ---------------------
     pl_video = ET.SubElement(mlt, "playlist", {"id": "playlist2"})
+
+    # Add blank entry to offset first clip to its target_start (first beat)
+    first_target = assignments[0].get("target_start", 0) if assignments else 0
+    if first_target > 0:
+        blank_tc = _seconds_to_timecode(first_target)
+        ET.SubElement(pl_video, "entry", {
+            "producer": "producer0",
+            "in": "00:00:00.000",
+            "out": blank_tc,
+        })
+
+    # Track cumulative timeline position for gap-filling
+    timeline_pos = first_target
     for i in range(num_video_clips):
         a = assignments[i]
+        target = a.get("target_start", 0)
+        dur_s = a.get("source_end", 0) - a.get("source_start", 0)
+
+        # Add blank entry if there's a gap between timeline_pos and target
+        if target > timeline_pos + 0.001:
+            gap_tc = _seconds_to_timecode(target - timeline_pos)
+            ET.SubElement(pl_video, "entry", {
+                "producer": "producer0",
+                "in": "00:00:00.000",
+                "out": gap_tc,
+            })
+
         in_tc = _seconds_to_timecode(a.get("source_start", 0))
         out_tc = _seconds_to_timecode(a.get("source_end", 0))
         entry = ET.SubElement(pl_video, "entry", {
@@ -218,6 +243,7 @@ def render_kdenlive(
             "out": out_tc,
         })
         _add_prop(entry, "kdenlive:id", str(chain_kdenlive_ids[i]))
+        timeline_pos = target + dur_s
     pl_v_empty = ET.SubElement(mlt, "playlist", {"id": "playlist3"})
     tractor1 = ET.SubElement(mlt, "tractor", {
         "id": "tractor1",
