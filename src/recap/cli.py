@@ -260,7 +260,7 @@ def trim(plan_path, output_dir):
 @click.option(
     "--fps",
     type=float,
-    default=30.0,
+    default=25.0,
     show_default=True,
     help="Timeline frame rate.",
 )
@@ -395,13 +395,26 @@ def analyze(video_path, window, force):
     default=False,
     help="Re-analyze all clips and music, ignoring any cached results.",
 )
-def create(clips_dir, music_file, output_path, mode, ratio, seed, force):
-    """Run the full recap pipeline: analyze → assign → render.
+@click.option(
+    "--fps",
+    type=float,
+    default=25.0,
+    show_default=True,
+    help="Timeline frame rate (also used for transcoding).",
+)
+@click.option(
+    "--no-transcode",
+    is_flag=True,
+    default=False,
+    help="Skip the transcode step (use original VFR sources directly).",
+)
+def create(clips_dir, music_file, output_path, mode, ratio, seed, force, fps, no_transcode):
+    """Run the full recap pipeline: transcode → analyze → assign → render.
 
     CLIPS_DIR is a directory of source video clips (.mp4/.mov).
     MUSIC_FILE is an audio file (MP3, WAV, etc.).
-    Trimming is done at timeline playback via Kdenlive in/out points —
-    no pre-trimmed media files are produced.
+    Clips are transcoded to constant 25fps by default; timeline trimming
+    uses Kdenlive in/out points — no pre-trimmed media files are produced.
     """
     from pathlib import Path
 
@@ -412,15 +425,38 @@ def create(clips_dir, music_file, output_path, mode, ratio, seed, force):
 
     clips_path = Path(clips_dir)
     music_path = Path(music_file)
+    do_transcode = not no_transcode
+    transcode_fps = int(fps) if fps == int(fps) else fps
 
-    # Stage 1: Batch analyze clips
-    click.echo("Stage 1/4: Analyzing clips...")
-    batch = analyze_directory(str(clips_path), force=force)
+    # Stage 1: Transcode + analyze clips
+    if do_transcode:
+        click.echo("Stage 1/5: Transcoding clips to CFR...")
+    else:
+        click.echo("Stage 1/4: Analyzing clips...")
+
+    batch = analyze_directory(
+        str(clips_path),
+        force=force,
+        transcode=do_transcode,
+    )
     if batch["errors"]:
         for err in batch["errors"]:
             click.echo(f"  WARNING: {err['file']} — {err['error']}", err=True)
+
+    tc = batch.get("transcode")
+    if tc:
+        tc_info = []
+        if tc["new"]:
+            tc_info.append(f"Transcoded: {tc['new']}")
+        if tc["skipped"]:
+            tc_info.append(f"Transcode skipped: {tc['skipped']}")
+        if tc["errors"]:
+            tc_info.append(f"Transcode errors: {len(tc['errors'])}")
+        click.echo(f"  {', '.join(tc_info)}")
+        for e in tc["errors"]:
+            click.echo(f"  WARNING: {e['file']} — {e['error']}", err=True)
     click.echo(
-        f"  Processed: {batch['processed']}, "
+        f"  Analyzed: {batch['processed']}, "
         f"Skipped (cached): {batch['skipped']}, "
         f"Errors: {len(batch['errors'])}"
     )
@@ -431,7 +467,9 @@ def create(clips_dir, music_file, output_path, mode, ratio, seed, force):
         sys.exit(1)
 
     # Stage 2: Analyze music
-    click.echo("Stage 2/4: Analyzing music...")
+    stage = 3 if do_transcode else 2
+    total = 5 if do_transcode else 4
+    click.echo(f"Stage {stage}/{total}: Analyzing music...")
     cache_dir = clips_path / ".recap-cache"
     music_cache_name = music_path.stem + "_beats.json"
     music_cache_path = cache_dir / music_cache_name
@@ -448,8 +486,9 @@ def create(clips_dir, music_file, output_path, mode, ratio, seed, force):
         f"{len(beat_data['beats'])} beats."
     )
 
-    # Stage 3: Assign clips to beats
-    click.echo(f"Stage 3/4: Assigning clips to beats (mode: {mode})...")
+    # Stage 3/4: Assign clips to beats
+    stage_assign = 4 if do_transcode else 3
+    click.echo(f"Stage {stage_assign}/{total}: Assigning clips to beats (mode: {mode})...")
     plan = assign_clips(
         beat_analysis=beat_data,
         clip_analyses=clip_data,
@@ -458,14 +497,15 @@ def create(clips_dir, music_file, output_path, mode, ratio, seed, force):
     )
     click.echo(f"  Assigned {len(plan['assignments'])} clip(s) to beat slots.")
 
-    # Stage 4: Render kdenlive project
-    click.echo("Stage 4/4: Rendering kdenlive project...")
+    # Stage 4/5: Render kdenlive project
+    stage_render = 5 if do_transcode else 4
+    click.echo(f"Stage {stage_render}/{total}: Rendering kdenlive project...")
     output_dir_resolved = Path(output_path).resolve().parent
     xml = render_kdenlive(
         plan,
         music_path=str(music_path),
         output_ratio=ratio,
-        fps=30.0,
+        fps=float(fps),
         output_dir=str(output_dir_resolved),
     )
     Path(output_path).write_text(xml, encoding="utf-8")

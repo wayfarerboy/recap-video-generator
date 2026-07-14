@@ -155,6 +155,21 @@ class TestFindVideos:
 
         assert _find_videos(tmp_path) == []
 
+    def test_excludes_recap_cache_dir(self, tmp_path):
+        """_find_videos excludes .recap-cache/ subtree."""
+        from recap.batch import _find_videos
+
+        (tmp_path / "good.mp4").touch()
+        cache = tmp_path / ".recap-cache"
+        transcode_dir = cache / "transcoded"
+        transcode_dir.mkdir(parents=True)
+        (transcode_dir / "hidden.mp4").touch()
+
+        found = _find_videos(tmp_path)
+        names = {p.name for p in found}
+        assert names == {"good.mp4"}
+        assert "hidden.mp4" not in names
+
 
 # ---------------------------------------------------------------------------
 # Integration tests — analyze_directory
@@ -386,3 +401,72 @@ class TestAnalyzeDirectoryCLI:
         result = runner.invoke(main, ["analyze", str(tmp_path)])
         assert result.exit_code == 0
         assert "Processed: 0, Skipped (cached): 0, Errors: 0" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Transcode integration in analyze_directory (ticket 08)
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeDirectoryWithTranscode:
+    def test_transcode_parameter_accepted(self, tmp_path):
+        """analyze_directory accepts transcode=True without crashing."""
+        from recap.batch import analyze_directory
+
+        v = tmp_path / "clip.mp4"
+        create_synthetic_video(v, num_frames=30, fps=30)
+
+        summary = analyze_directory(str(tmp_path), transcode=False)
+        assert summary["processed"] == 1
+        assert summary.get("transcode") is None
+
+    def test_transcode_flag_adds_transcode_summary_key(self, tmp_path):
+        """When transcode=True is passed, the result includes a transcode summary."""
+        from recap.batch import analyze_directory
+
+        v = tmp_path / "clip.mp4"
+        create_synthetic_video(v, num_frames=30, fps=30)
+
+        summary = analyze_directory(str(tmp_path), transcode=True)
+        assert "transcode" in summary
+        assert summary["transcode"] is not None
+
+    def test_analyze_with_transcode_processes_clips(self, tmp_path):
+        """With transcode enabled, clips are still analyzed successfully."""
+        from recap.batch import analyze_directory
+
+        v1 = tmp_path / "clip1.mp4"
+        create_synthetic_video(v1, num_frames=30, fps=30)
+
+        summary = analyze_directory(str(tmp_path), transcode=True)
+        assert summary["processed"] == 1
+        assert summary["errors"] == []
+        assert str(v1) in summary["results"]
+
+    def test_transcode_result_has_expected_keys(self, tmp_path):
+        """Transcode summary has new, skipped, errors keys."""
+        from recap.batch import analyze_directory
+
+        v = tmp_path / "clip.mp4"
+        create_synthetic_video(v, num_frames=30, fps=30)
+
+        summary = analyze_directory(str(tmp_path), transcode=True)
+        tc = summary["transcode"]
+        assert "new" in tc
+        assert "skipped" in tc
+        assert "errors" in tc
+
+    def test_transcode_works_with_force(self, tmp_path):
+        """transcode + force work together."""
+        from recap.batch import analyze_directory
+
+        v = tmp_path / "clip.mp4"
+        create_synthetic_video(v, num_frames=30, fps=30)
+
+        # First pass
+        s1 = analyze_directory(str(tmp_path), transcode=True)
+        assert s1["processed"] == 1
+
+        # Second pass with force
+        s2 = analyze_directory(str(tmp_path), transcode=True, force=True)
+        assert s2["processed"] == 1
+        assert s2["skipped"] == 0

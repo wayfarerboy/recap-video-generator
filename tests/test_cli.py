@@ -236,8 +236,8 @@ class TestCreatePipeline:
         result = runner.invoke(main, ["create"])
         assert result.exit_code != 0
 
-    def test_pipeline_runs_all_four_stages(self, tmp_path, monkeypatch):
-        """End-to-end: create command calls each stage in order (no trim)."""
+    def test_pipeline_runs_all_stages_no_transcode(self, tmp_path, monkeypatch):
+        """End-to-end: create --no-transcode calls 4 stages in order."""
         clips_dir = tmp_path / "clips"
         clips_dir.mkdir()
         music_file = tmp_path / "song.mp3"
@@ -252,8 +252,8 @@ class TestCreatePipeline:
 
         call_order = []
 
-        def fake_analyze_directory(directory, force=False):
-            call_order.append(("analyze_directory", directory, force))
+        def fake_analyze_directory(directory, force=False, transcode=False):
+            call_order.append(("analyze_directory", directory, force, transcode))
             return dict(clip_results)
 
         def fake_detect_beats(filepath):
@@ -282,13 +282,14 @@ class TestCreatePipeline:
             "--mode", "best-match",
             "--ratio", "9:16",
             "--force",
+            "--no-transcode",
         ])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}\nstderr: {result.exc_info}"
 
-        # Verify each stage ran (4 stages, no trim)
+        # Verify each stage ran (4 stages, no transcode)
         assert len(call_order) == 4
-        assert call_order[0] == ("analyze_directory", str(clips_dir), True)
+        assert call_order[0] == ("analyze_directory", str(clips_dir), True, False)
         assert call_order[1] == ("detect_beats", str(music_file))
         assert call_order[2] == ("assign_clips", "best-match")
         assert call_order[3] == ("render_kdenlive", str(music_file), "9:16")
@@ -304,8 +305,72 @@ class TestCreatePipeline:
         assert "Stage 4/4" in result.output
         assert "Done!" in result.output
 
-    def test_pipeline_defaults(self, tmp_path, monkeypatch):
-        """End-to-end: uses correct defaults (shuffled-tiers, 16:9, no trim)."""
+    def test_pipeline_runs_all_five_stages_with_transcode(self, tmp_path, monkeypatch):
+        """End-to-end: create (default, transcode on) calls 5 stages."""
+        clips_dir = tmp_path / "clips"
+        clips_dir.mkdir()
+        music_file = tmp_path / "song.mp3"
+        music_file.write_text("fake audio")
+        output_path = tmp_path / "recap.kdenlive"
+
+        beat_data = _make_beat_analysis()
+        clip_results = _make_clip_analyses(3)
+        assign_plan = _make_assignment_plan(clips_dir=str(clips_dir))
+
+        kdenlive_xml = '<?xml version="1.0"?>\n<mlt version="1.1"></mlt>'
+
+        call_order = []
+
+        def fake_analyze_directory(directory, force=False, transcode=False):
+            call_order.append(("analyze_directory", directory, force, transcode))
+            r = dict(clip_results)
+            r["transcode"] = {"new": 3, "skipped": 0, "errors": []}
+            return r
+
+        def fake_detect_beats(filepath):
+            call_order.append(("detect_beats", filepath))
+            return dict(beat_data)
+
+        def fake_assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", **kwargs):
+            call_order.append(("assign_clips", mode))
+            return dict(assign_plan)
+
+        def fake_render_kdenlive(plan, music_path, output_ratio="16:9", **kwargs):
+            call_order.append(("render_kdenlive", music_path, output_ratio))
+            return kdenlive_xml
+
+        monkeypatch.setattr("recap.batch.analyze_directory", fake_analyze_directory)
+        monkeypatch.setattr("recap.audio.detect_beats", fake_detect_beats)
+        monkeypatch.setattr("recap.assign.assign_clips", fake_assign_clips)
+        monkeypatch.setattr("recap.render.render_kdenlive", fake_render_kdenlive)
+
+        runner = click.testing.CliRunner()
+        result = runner.invoke(main, [
+            "create",
+            str(clips_dir),
+            str(music_file),
+            "-o", str(output_path),
+            "--mode", "best-match",
+        ])
+
+        assert result.exit_code == 0, f"CLI failed: {result.output}\nstderr: {result.exc_info}"
+
+        # Verify each stage ran (5 stages with transcode)
+        assert len(call_order) == 4
+        assert call_order[0] == ("analyze_directory", str(clips_dir), False, True)
+        assert call_order[1] == ("detect_beats", str(music_file))
+        assert call_order[2] == ("assign_clips", "best-match")
+
+        # Verify progress messages (5-stage numbering)
+        assert "Stage 1/5" in result.output
+        assert "Stage 3/5" in result.output
+        assert "Stage 4/5" in result.output
+        assert "Stage 5/5" in result.output
+        assert "Transcoded:" in result.output
+        assert "Done!" in result.output
+
+    def test_pipeline_defaults_no_transcode(self, tmp_path, monkeypatch):
+        """End-to-end --no-transcode: uses correct defaults (shuffled-tiers, 16:9)."""
         clips_dir = tmp_path / "clips"
         clips_dir.mkdir()
         music_file = tmp_path / "song.mp3"
@@ -318,7 +383,8 @@ class TestCreatePipeline:
         call_order = []
 
         monkeypatch.setattr("recap.batch.analyze_directory",
-                           lambda directory, force=False: (call_order.append(("analyze", force)) or dict(clip_results)))
+                           lambda directory, force=False, transcode=False: (
+                               call_order.append(("analyze", force, transcode)) or dict(clip_results)))
         monkeypatch.setattr("recap.audio.detect_beats",
                            lambda filepath: (call_order.append(("beats",)) or dict(beat_data)))
         monkeypatch.setattr("recap.assign.assign_clips",
@@ -330,11 +396,11 @@ class TestCreatePipeline:
 
         runner = click.testing.CliRunner()
         result = runner.invoke(main, [
-            "create", str(clips_dir), str(music_file),
+            "create", str(clips_dir), str(music_file), "--no-transcode",
         ])
 
         assert result.exit_code == 0
-        assert call_order[0] == ("analyze", False)
+        assert call_order[0] == ("analyze", False, False)
         # shuffled-tiers is default mode
         assert ("assign", "shuffled-tiers") in call_order
         # 16:9 is default ratio
@@ -349,7 +415,7 @@ class TestCreatePipeline:
         music_file = tmp_path / "song.mp3"
         music_file.write_text("fake audio")
 
-        empty_batch = {"processed": 0, "skipped": 0, "errors": [], "results": {}}
+        empty_batch = {"processed": 0, "skipped": 0, "errors": [], "results": {}, "transcode": None}
         monkeypatch.setattr("recap.batch.analyze_directory", lambda *a, **kw: empty_batch)
 
         runner = click.testing.CliRunner()
@@ -381,7 +447,9 @@ class TestCreatePipeline:
         monkeypatch.setattr("recap.render.render_kdenlive", lambda *a, **kw: "<xml/>")
 
         runner = click.testing.CliRunner()
-        result = runner.invoke(main, ["create", str(clips_dir), str(music_file)])
+        result = runner.invoke(main, [
+            "create", str(clips_dir), str(music_file), "--no-transcode",
+        ])
         assert result.exit_code == 0
         assert len(trim_called) == 0, "trim_plan should not be called"
 

@@ -48,7 +48,7 @@ def render_kdenlive(
     music_path: str,
     output_ratio: str = "16:9",
     *,
-    fps: float = 30.0,
+    fps: float = 25.0,
     output_dir: str | Path | None = None,
     orientation_cache: dict[str, str] | None = None,
     root_dir: str | Path = "/",
