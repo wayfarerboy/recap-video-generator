@@ -326,7 +326,6 @@ class TestTimelineInOut:
         tree = ET.fromstring(xml)
         playlist2 = tree.find("playlist[@id='playlist2']")
         entries = playlist2.findall("entry")
-        # First entry may be blank offset — skip it
         clip_entries = [e for e in entries if e.get("producer", "").startswith("chain")]
         assert len(clip_entries) == 1
         entry = clip_entries[0]

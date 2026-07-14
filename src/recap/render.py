@@ -209,18 +209,11 @@ def render_kdenlive(
     # ---- tractor1: video sub-tractor (hide="audio") ---------------------
     pl_video = ET.SubElement(mlt, "playlist", {"id": "playlist2"})
 
-    # Add blank entry to offset first clip to its target_start (first beat)
-    first_target = assignments[0].get("target_start", 0) if assignments else 0
-    if first_target > 0:
-        blank_tc = _seconds_to_timecode(first_target)
-        ET.SubElement(pl_video, "entry", {
-            "producer": "producer0",
-            "in": "00:00:00.000",
-            "out": blank_tc,
-        })
-
-    # Track cumulative timeline position for gap-filling
-    timeline_pos = first_target
+    # No blank entries in playlist2 — Kdenlive may misrender colour
+    # producers mixed with chain entries.  Instead, fill gaps (beat-offset
+    # at start, or duration loss from clamped clips) by pulling the
+    # *following* clip's source in-point backward so the gap disappears.
+    timeline_pos = 0.0
     for i in range(num_video_clips):
         a = assignments[i]
         target = a.get("target_start", 0)
@@ -232,16 +225,16 @@ def render_kdenlive(
         else:
             slot_dur = music_dur - target
 
-        # Add blank entry if there's a gap between timeline_pos and target
-        if target > timeline_pos + 0.001:
-            gap_tc = _seconds_to_timecode(target - timeline_pos)
-            ET.SubElement(pl_video, "entry", {
-                "producer": "producer0",
-                "in": "00:00:00.000",
-                "out": gap_tc,
-            })
-
         source_start = a.get("source_start", 0)
+        # Absorb any gap before this clip by pulling its in-point back
+        # and extending its slot duration so the clip fills the gap
+        # on the timeline.  This avoids blank entries in playlist2 while
+        # keeping beat-aligned content at the correct timeline position.
+        gap = max(0.0, target - timeline_pos)
+        if gap > 0.001:
+            source_start = max(0.0, source_start - gap)
+            slot_dur = slot_dur + gap
+
         in_tc = _seconds_to_timecode(source_start)
         # Use source_start + slot_dur so clip exactly fills the beat slot,
         # but clamp to the source file's probed duration so we never ask
@@ -256,7 +249,7 @@ def render_kdenlive(
             "out": out_tc,
         })
         _add_prop(entry, "kdenlive:id", str(chain_kdenlive_ids[i]))
-        timeline_pos = target + actual_dur
+        timeline_pos = timeline_pos + actual_dur
     pl_v_empty = ET.SubElement(mlt, "playlist", {"id": "playlist3"})
     tractor1 = ET.SubElement(mlt, "tractor", {
         "id": "tractor1",
