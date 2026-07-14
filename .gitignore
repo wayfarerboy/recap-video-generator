@@ -1,3 +1,5 @@
+.scratch/
+.pi-subagents/
 *.pyc
 __pycache__/
 *.egg-info/
