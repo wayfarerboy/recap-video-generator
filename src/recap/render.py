@@ -241,16 +241,22 @@ def render_kdenlive(
                 "out": gap_tc,
             })
 
-        in_tc = _seconds_to_timecode(a.get("source_start", 0))
-        # Use source_start + slot_dur so clip exactly fills the beat slot
-        out_tc = _seconds_to_timecode(a.get("source_start", 0) + slot_dur)
+        source_start = a.get("source_start", 0)
+        in_tc = _seconds_to_timecode(source_start)
+        # Use source_start + slot_dur so clip exactly fills the beat slot,
+        # but clamp to the source file's probed duration so we never ask
+        # MLT / Kdenlive to play past end-of-file (would cause silent
+        # duration loss and cumulative beat drift).
+        out_seconds = min(source_start + slot_dur, chain_dur_seconds[i])
+        out_tc = _seconds_to_timecode(out_seconds)
+        actual_dur = out_seconds - source_start
         entry = ET.SubElement(pl_video, "entry", {
             "producer": f"chain{i}",
             "in": in_tc,
             "out": out_tc,
         })
         _add_prop(entry, "kdenlive:id", str(chain_kdenlive_ids[i]))
-        timeline_pos = target + slot_dur
+        timeline_pos = target + actual_dur
     pl_v_empty = ET.SubElement(mlt, "playlist", {"id": "playlist3"})
     tractor1 = ET.SubElement(mlt, "tractor", {
         "id": "tractor1",

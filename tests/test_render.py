@@ -332,10 +332,11 @@ class TestTimelineInOut:
         entry = clip_entries[0]
         # source_start=2.5, in should match
         assert entry.get("in") == "00:00:02.500"
-        # out uses source_start + slot_dur (beat-aligned), not source_end
-        # slot for single clip = music_dur - target_start (music_dur=10.0 from probe)
-        # target_start is 0.0, so slot_dur = 10.0s
-        assert entry.get("out") == "00:00:12.500"
+        # out uses source_start + slot_dur (beat-aligned), clamped to source
+        # file duration. slot = music_dur - target_start = 10.0s, so
+        # source_start + slot = 12.5, clamped to probed duration of fake
+        # file (10.0s fallback for missing file).
+        assert entry.get("out") == "00:00:10.000"
 
     def test_timeline_entry_has_kdenlive_id_child(self, trimming_plan):
         xml = render_kdenlive(trimming_plan, music_path="/fake/music.mp3")
