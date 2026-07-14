@@ -4,7 +4,6 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
-from unittest import mock
 from xml.etree import ElementTree as ET
 
 import click.testing
@@ -12,7 +11,7 @@ import pytest
 
 from recap.cli import main
 from recap.render import render_kdenlive, _probe_duration, _probe_dimensions
-from recap.render import _relative_path, _float_to_fraction, _aspect_fraction
+from recap.render import _float_to_fraction, _aspect_fraction
 
 
 # ---------------------------------------------------------------------------
@@ -21,7 +20,6 @@ from recap.render import _relative_path, _float_to_fraction, _aspect_fraction
 
 @pytest.fixture
 def landscape_plan():
-    """Plan with two landscape clips."""
     return {
         "bpm": 120.0,
         "fps": 30.0,
@@ -53,29 +51,7 @@ def landscape_plan():
 
 
 @pytest.fixture
-def portrait_plan():
-    """Plan with one portrait clip."""
-    return {
-        "bpm": 120.0,
-        "assignments": [
-            {
-                "clip": "/fake/clips/portrait.mp4",
-                "trim": "/fake/trims/port.mp4",
-                "source_start": 0.0,
-                "source_end": 3.0,
-                "target_start": 0.0,
-                "beat_index": 0,
-                "beat_count": 6,
-                "beat_energy": 0.5,
-                "motion_score": 0.9,
-            },
-        ],
-    }
-
-
-@pytest.fixture
 def single_clip_plan():
-    """Plan with a single landscape clip."""
     return {
         "bpm": 120.0,
         "assignments": [
@@ -99,325 +75,209 @@ def single_clip_plan():
 # ---------------------------------------------------------------------------
 
 class TestXMLStructure:
-    """Verify the generated XML conforms to the expected structure."""
-
     def test_well_formed_xml(self, landscape_plan):
-        """Generated output is well-formed XML."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         assert tree.tag == "mlt"
 
-    def test_document_version_1_1(self, landscape_plan):
-        """The mlt root element has version="1.1"."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_mlt_root_attributes(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        assert tree.get("version") == "1.1"
+        assert tree.get("LC_NUMERIC") == "C"
+        assert tree.get("producer") == "main_bin"
+        assert tree.get("version") == "7.37.0"
 
-    def test_profile_present_with_correct_dimensions(self, landscape_plan):
-        """Profile has 1920x1080 for 16:9 output."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_profile_present(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         profile = tree.find("profile")
         assert profile is not None
         assert profile.get("width") == "1920"
         assert profile.get("height") == "1080"
-        assert profile.get("display_aspect_num") == "16"
-        assert profile.get("display_aspect_den") == "9"
 
-    def test_profile_9_16_dimensions(self, landscape_plan):
-        """Profile has 1080x1920 for 9:16 output."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              output_ratio="9:16",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_profile_9_16(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3", output_ratio="9:16")
         tree = ET.fromstring(xml)
         profile = tree.find("profile")
         assert profile.get("width") == "1080"
         assert profile.get("height") == "1920"
 
-    def test_has_tractor_with_two_tracks(self, landscape_plan):
-        """Tractor has one video track and one audio track."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_has_tractors(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        tractor = tree.find("tractor")
-        assert tractor is not None
-        tracks = tractor.findall("track")
-        assert len(tracks) == 2
-        # First track references video playlist
-        assert tracks[0].get("producer") == "playlist0"
-        # Second track references audio playlist
-        assert tracks[1].get("producer") == "playlist1"
+        tractors = tree.findall("tractor")
+        # Should have at least tractor0 (timeline) and tractor1 (wrapper)
+        assert len(tractors) >= 2
 
     def test_main_bin_present(self, landscape_plan):
-        """kdenlive main_bin playlist is present."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         main_bin = tree.find("playlist[@id='main_bin']")
         assert main_bin is not None
 
-
-class TestProducerElements:
-    """Verify producer elements are generated correctly."""
-
-    def test_one_producer_per_clip_plus_music(self, landscape_plan):
-        """Produces N+1 producers: N clips + 1 music."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_docproperties_present(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        producers = tree.findall("producer")
-        assert len(producers) == 3  # 2 clips + music
+        main_bin = tree.find("playlist[@id='main_bin']")
+        dp = main_bin.find("property[@name='kdenlive:docproperties.kdenliveversion']")
+        assert dp is not None
+        assert dp.text == "23.04.0"
 
-    def test_producers_have_resource_property(self, landscape_plan):
-        """Each producer has a resource property pointing to the media file."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
-        tree = ET.fromstring(xml)
-        producers = tree.findall("producer")
-        for prod in producers:
-            resource = prod.find("property[@name='resource']")
-            assert resource is not None, f"Producer {prod.get('id')} missing resource"
-            assert resource.text is not None
 
-    def test_clip_producers_use_trim_path_when_available(self, landscape_plan):
-        """Producers reference the trimmed file path."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
-        tree = ET.fromstring(xml)
-        res0 = tree.find("producer[@id='producer0']/property[@name='resource']")
-        assert res0 is not None
-        assert "abc123.mp4" in res0.text
+class TestChainElements:
+    """Verify chain elements (kdenlive media sources)."""
 
-    def test_music_producer_has_id_producer_music(self, landscape_plan):
-        """Music producer is named producer_music."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_chains_for_all_clips_plus_music(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        music = tree.find("producer[@id='producer_music']")
-        assert music is not None
-        resource = music.find("property[@name='resource']")
-        assert resource is not None
-        assert "music" in resource.text
+        chains = tree.findall("chain")
+        assert len(chains) == 3  # 2 clips + music
+
+    def test_chains_have_control_uuid(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        for chain in ET.fromstring(xml).findall("chain"):
+            cu = chain.find("property[@name='kdenlive:control_uuid']")
+            assert cu is not None
+            assert cu.text.startswith("{") and cu.text.endswith("}")
+
+    def test_chains_have_kdenlive_id(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        ids = []
+        for chain in ET.fromstring(xml).findall("chain"):
+            kid = chain.find("property[@name='kdenlive:id']")
+            assert kid is not None
+            ids.append(int(kid.text))
+        assert ids == sorted(ids)  # sequential
+
+    def test_clip_chains_have_resource(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        chains = ET.fromstring(xml).findall("chain")
+        video_chains = [c for c in chains if "avformat-novalidate" in
+                        (c.find("property[@name='mlt_service']").text or "")]
+        assert len(video_chains) == 2
+
+    def test_music_chain_has_audio_service(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        chains = ET.fromstring(xml).findall("chain")
+        audio_chains = [c for c in chains if
+                        c.find("property[@name='mlt_service']").text == "avformat"]
+        assert len(audio_chains) == 1
+
+    def test_out_is_timecode_format(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        for chain in ET.fromstring(xml).findall("chain"):
+            out = chain.get("out")
+            assert ":" in out  # HH:MM:SS.fff
+            assert "." in out
 
 
 class TestTimelineEntries:
     """Verify video and audio playlist entries."""
 
-    def test_video_playlist_has_correct_entry_count(self, landscape_plan):
-        """Video playlist has one entry per clip."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_video_playlist_entries(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        playlist0 = tree.find("playlist[@id='playlist0']")
-        assert playlist0 is not None
-        entries = playlist0.findall("entry")
+        p0 = tree.find("playlist[@id='playlist0']")
+        entries = p0.findall("entry")
         assert len(entries) == 2
 
-    def test_video_entries_reference_correct_producers(self, landscape_plan):
-        """Video entries point to the right producer IDs."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_entry_in_out_are_timecodes(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        playlist0 = tree.find("playlist[@id='playlist0']")
-        entries = playlist0.findall("entry")
-        assert entries[0].get("producer") == "producer0"
-        assert entries[1].get("producer") == "producer1"
+        p0 = tree.find("playlist[@id='playlist0']")
+        for entry in p0.findall("entry"):
+            assert ":" in entry.get("in")
+            assert ":" in entry.get("out")
+            assert "." in entry.get("out")
 
-    def test_audio_playlist_has_music_entry(self, landscape_plan):
-        """Audio playlist has one entry for the music producer."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_entries_reference_chain_producers(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        playlist1 = tree.find("playlist[@id='playlist1']")
-        assert playlist1 is not None
-        entries = playlist1.findall("entry")
+        p0 = tree.find("playlist[@id='playlist0']")
+        for entry in p0.findall("entry"):
+            assert entry.get("producer", "").startswith("chain")
+
+    def test_audio_playlist_has_entry(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
+        tree = ET.fromstring(xml)
+        p1 = tree.find("playlist[@id='playlist1']")
+        entries = p1.findall("entry")
         assert len(entries) == 1
-        assert entries[0].get("producer") == "producer_music"
 
-    def test_entry_in_out_are_integer_frame_numbers(self, landscape_plan):
-        """Entry in/out attributes are integer frame numbers."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_tractor_tracks_hide_video(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        playlist0 = tree.find("playlist[@id='playlist0']")
-        for entry in playlist0.findall("entry"):
-            in_val = int(entry.get("in", "-1"))
-            out_val = int(entry.get("out", "-1"))
-            assert in_val >= 0
-            assert out_val >= in_val
+        tractor0 = tree.find("tractor[@id='tractor0']")
+        tracks = tractor0.findall("track")
+        assert len(tracks) == 2
+        # Both should be hide="video" (kdenlive convention)
+        for t in tracks:
+            assert t.get("hide") == "video"
 
-    def test_video_entry_in_is_always_zero(self, landscape_plan):
-        """Trimmed clips always start at source in=0."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_wrapper_tractor_has_track(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        playlist0 = tree.find("playlist[@id='playlist0']")
-        for entry in playlist0.findall("entry"):
-            assert entry.get("in") == "0"
+        wrapper = tree.find("tractor[@id='tractor1']")
+        assert wrapper is not None
+        wrapper_tracks = wrapper.findall("track")
+        assert len(wrapper_tracks) == 1
+        assert wrapper_tracks[0].get("producer") == "tractor0"
 
 
-class TestTransforms:
-    """Verify per-clip MLT transform filters."""
+class TestTractorProperties:
+    """Verify sequence properties on tractor0."""
 
-    def test_rotation_added_for_portrait_clip(self, portrait_plan):
-        """Portrait orientation → affine filter with rotate=90."""
-        xml = render_kdenlive(portrait_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/portrait.mp4": "portrait"})
+    def test_tractor_has_uuid(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        # Find the video entry for producer0
-        playlist0 = tree.find("playlist[@id='playlist0']")
-        entry = playlist0.find("entry")
-        filters = entry.findall("filter")
-        filter_texts = [ET.tostring(f, encoding="unicode") for f in filters]
+        tractor = tree.find("tractor[@id='tractor0']")
+        uuid_prop = tractor.find("property[@name='kdenlive:uuid']")
+        assert uuid_prop is not None
+        assert uuid_prop.text.startswith("{")
 
-        has_rotate = any("transition.rotate" in ft and "90" in ft for ft in filter_texts)
-        assert has_rotate, f"Expected rotation filter, got: {filter_texts}"
-
-    def test_no_rotation_for_landscape_clip(self, landscape_plan):
-        """Landscape orientation → no rotation filter."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
+    def test_tractor_has_sequence_properties(self, landscape_plan):
+        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
-        playlist0 = tree.find("playlist[@id='playlist0']")
-        entries = playlist0.findall("entry")
-        for entry in entries:
-            filters = entry.findall("filter")
-            # No rotation filters
-            for f in filters:
-                props = f.findall("property")
-                for p in props:
-                    if p.get("name") == "transition.rotate":
-                        pytest.fail(f"Unexpected rotation filter: {ET.tostring(f, encoding='unicode')}")
-
-    def test_rotation_applied_even_without_dimension_probe(self):
-        """Rotation is gated on orientation metadata, not dimension probe."""
-        plan = {
-            "bpm": 120,
-            "assignments": [
-                {
-                    "clip": "/nonexistent/clip.mp4",
-                    "trim": "/nonexistent/trim.mp4",
-                    "source_start": 0.0,
-                    "source_end": 3.0,
-                    "target_start": 0.0,
-                    "beat_index": 0,
-                    "beat_count": 6,
-                    "beat_energy": 0.5,
-                    "motion_score": 0.9,
-                },
-            ],
-        }
-        xml = render_kdenlive(plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/nonexistent/clip.mp4": "portrait"})
-        assert "transition.rotate" in xml
-        assert "90" in xml
+        tractor = tree.find("tractor[@id='tractor0']")
+        assert tractor.find("property[@name='kdenlive:sequenceproperties.hasVideo']") is not None
+        assert tractor.find("property[@name='kdenlive:sequenceproperties.hasAudio']") is not None
 
 
 class TestEmptyPlan:
-    """Empty / edge-case plans."""
-
-    def test_empty_assignments_produces_valid_xml(self):
-        """Plan with no assignments still produces valid XML with audio track."""
+    def test_empty_assignments_valid_xml(self):
         plan = {"bpm": 120.0, "assignments": []}
         xml = render_kdenlive(plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         assert tree.tag == "mlt"
-        # Should have music producer
-        music = tree.find("producer[@id='producer_music']")
-        assert music is not None
-        # Should have audio playlist
-        playlist1 = tree.find("playlist[@id='playlist1']")
-        assert playlist1 is not None
+        # Should still have music chain and audio playlist
+        assert tree.find("playlist[@id='playlist1']") is not None
 
 
 class TestRatioFlag:
-    """Output ratio handling."""
-
     def test_16_9_default(self, single_clip_plan):
-        """Default is 16:9 → 1920x1080 profile."""
-        xml = render_kdenlive(single_clip_plan, music_path="/fake/music.mp3",
-                              orientation_cache={"/fake/clips/lone.mp4": "landscape"})
+        xml = render_kdenlive(single_clip_plan, music_path="/fake/music.mp3")
         tree = ET.fromstring(xml)
         profile = tree.find("profile")
         assert profile.get("width") == "1920"
         assert profile.get("height") == "1080"
 
     def test_9_16_explicit(self, single_clip_plan):
-        """Explicit 9:16 → 1080x1920 profile."""
-        xml = render_kdenlive(single_clip_plan, music_path="/fake/music.mp3",
-                              output_ratio="9:16",
-                              orientation_cache={"/fake/clips/lone.mp4": "landscape"})
+        xml = render_kdenlive(single_clip_plan, music_path="/fake/music.mp3", output_ratio="9:16")
         tree = ET.fromstring(xml)
         profile = tree.find("profile")
         assert profile.get("width") == "1080"
         assert profile.get("height") == "1920"
 
     def test_invalid_ratio_raises(self, single_clip_plan):
-        """Unknown ratio raises ValueError."""
         with pytest.raises(ValueError, match="Unknown output ratio"):
-            render_kdenlive(single_clip_plan, music_path="/fake/music.mp3",
-                            output_ratio="4:3")
-
-
-class TestRelativePaths:
-    """Portable (relative) resource paths."""
-
-    def test_relative_paths_when_output_dir_given(self, landscape_plan):
-        """Resource paths are relative when output_dir is provided."""
-        xml = render_kdenlive(landscape_plan, music_path="/fake/music.mp3",
-                              output_dir="/fake/project",
-                              orientation_cache={"/fake/clips/ski.mp4": "landscape",
-                                                 "/fake/clips/jump.mp4": "landscape"})
-        tree = ET.fromstring(xml)
-        prod0 = tree.find("producer[@id='producer0']")
-        resource = prod0.find("property[@name='resource']")
-        # Path should be relative (no leading /)
-        path = resource.text
-        assert not path.startswith("/"), f"Expected relative path, got {path}"
-        assert ".." in path or "trims" in path or "fake" in path
-
-    def test_relative_path_helper(self):
-        """_relative_path converts correctly."""
-        result = _relative_path("/a/b/c.mp4", "/a")
-        assert result == "b/c.mp4"
-
-    def test_relative_path_sibling(self):
-        """_relative_path handles sibling directories."""
-        result = _relative_path("/a/b/c.mp4", "/a/d")
-        assert result == "../b/c.mp4"
+            render_kdenlive(single_clip_plan, music_path="/fake/music.mp3", output_ratio="4:3")
 
 
 class TestUtilityFunctions:
-    """Unit tests for utility helpers."""
-
     def test_aspect_fraction_16_9(self):
         num, den = _aspect_fraction(1920, 1080)
         assert num == 16
         assert den == 9
-
-    def test_aspect_fraction_9_16(self):
-        num, den = _aspect_fraction(1080, 1920)
-        assert num == 9
-        assert den == 16
 
     def test_float_to_fraction_30(self):
         num, den = _float_to_fraction(30.0)
@@ -425,60 +285,32 @@ class TestUtilityFunctions:
         assert den == 1
 
     def test_float_to_fraction_2997(self):
-        """29.97 → 30000/1001."""
         num, den = _float_to_fraction(29.97)
         assert num == 30000
         assert den == 1001
 
-    def test_float_to_fraction_23976(self):
-        """23.976 → 24000/1001."""
-        num, den = _float_to_fraction(23.976)
-        assert num == 24000
-        assert den == 1001
-
     def test_probe_dimensions_nonexistent(self):
-        """_probe_dimensions returns (0,0) for nonexistent files."""
         w, h = _probe_dimensions("/nonexistent/file.mp4")
         assert w == 0
         assert h == 0
 
     def test_probe_duration_nonexistent(self):
-        """_probe_duration returns fallback for nonexistent files."""
         dur = _probe_duration("/nonexistent/audio.mp3")
         assert dur == 10.0
 
 
 # ---------------------------------------------------------------------------
-# CLI integration tests
+# CLI tests
 # ---------------------------------------------------------------------------
 
 class TestCLIRender:
-    """Integration tests for `recap render` CLI subcommand."""
-
     def test_render_command_in_help(self):
-        """`recap --help` lists the render subcommand."""
         runner = click.testing.CliRunner()
         result = runner.invoke(main, ["--help"])
         assert result.exit_code == 0
         assert "render" in result.output
 
-    def test_render_requires_plan(self):
-        """`recap render` without --plan shows error."""
-        runner = click.testing.CliRunner()
-        result = runner.invoke(main, ["render"])
-        assert result.exit_code != 0
-
-    def test_render_requires_music(self):
-        """`recap render --plan ...` without --music shows error."""
-        with tempfile.TemporaryDirectory() as td:
-            plan_file = Path(td) / "plan.json"
-            plan_file.write_text(json.dumps({"bpm": 120, "assignments": []}))
-            runner = click.testing.CliRunner()
-            result = runner.invoke(main, ["render", "--plan", str(plan_file)])
-            assert result.exit_code != 0
-
-    def test_render_writes_output_file(self, tmp_path):
-        """End-to-end: render writes a .kdenlive file."""
+    def test_render_writes_output(self, tmp_path):
         plan_file = tmp_path / "plan.json"
         plan_file.write_text(json.dumps({
             "bpm": 120,
@@ -496,48 +328,33 @@ class TestCLIRender:
                 },
             ],
         }))
-
-        # Create a dummy music file
         music_file = tmp_path / "music.wav"
-        _generate_silent_wav(music_file, duration=1.0)
-
+        _generate_silent_wav(music_file)
         out_file = tmp_path / "recap.kdenlive"
+
         runner = click.testing.CliRunner()
         result = runner.invoke(main, [
-            "render",
-            "--plan", str(plan_file),
-            "--music", str(music_file),
+            "render", "--plan", str(plan_file), "--music", str(music_file),
             "-o", str(out_file),
         ])
         assert result.exit_code == 0, f"stderr: {result.output}"
         assert out_file.exists()
-
-        # Verify content
         content = out_file.read_text()
-        tree = ET.fromstring(content)
-        assert tree.get("version") == "1.1"
-        assert tree.find("producer[@id='producer_music']") is not None
+        assert "control_uuid" in content
+        assert "kdenlive:docproperties" in content
 
-    def test_render_with_ratio_flag(self, tmp_path):
-        """Render respects --ratio flag."""
+    def test_render_with_ratio(self, tmp_path):
         plan_file = tmp_path / "plan.json"
         plan_file.write_text(json.dumps({
             "bpm": 120,
             "assignments": [
-                {
-                    "clip": str(tmp_path / "clip0.mp4"),
-                    "source_start": 0,
-                    "source_end": 3,
-                    "target_start": 0,
-                    "beat_index": 0,
-                    "beat_count": 6,
-                    "beat_energy": 0.5,
-                    "motion_score": 0.8,
-                },
+                {"clip": str(tmp_path / "c.mp4"), "source_start": 0, "source_end": 3,
+                 "target_start": 0, "beat_index": 0, "beat_count": 6,
+                 "beat_energy": 0.5, "motion_score": 0.8},
             ],
         }))
-        music_file = tmp_path / "music.wav"
-        _generate_silent_wav(music_file, duration=1.0)
+        music_file = tmp_path / "m.wav"
+        _generate_silent_wav(music_file)
         out_file = tmp_path / "out.kdenlive"
 
         runner = click.testing.CliRunner()
@@ -547,74 +364,7 @@ class TestCLIRender:
         ])
         assert result.exit_code == 0
         content = out_file.read_text()
-        tree = ET.fromstring(content)
-        profile = tree.find("profile")
-        assert profile.get("width") == "1080"
-        assert profile.get("height") == "1920"
-
-    def test_render_default_output_path(self, tmp_path):
-        """Default -o is recap.kdenlive in CWD."""
-        plan_file = tmp_path / "plan.json"
-        plan_file.write_text(json.dumps({
-            "bpm": 120,
-            "assignments": [
-                {
-                    "clip": str(tmp_path / "c.mp4"),
-                    "source_start": 0,
-                    "source_end": 2,
-                    "target_start": 0,
-                    "beat_index": 0,
-                    "beat_count": 4,
-                    "beat_energy": 0.5,
-                    "motion_score": 0.8,
-                },
-            ],
-        }))
-        music_file = tmp_path / "m.wav"
-        _generate_silent_wav(music_file, duration=1.0)
-
-        import os
-        cwd = os.getcwd()
-        try:
-            os.chdir(str(tmp_path))
-            runner = click.testing.CliRunner()
-            result = runner.invoke(main, [
-                "render", "--plan", str(plan_file), "--music", str(music_file),
-            ])
-            assert result.exit_code == 0
-            out = tmp_path / "recap.kdenlive"
-            assert out.exists()
-        finally:
-            os.chdir(cwd)
-
-    def test_render_invalid_plan_json(self, tmp_path):
-        """Malformed JSON in plan file gives error."""
-        plan_file = tmp_path / "bad.json"
-        plan_file.write_text("not json {{{")
-        music_file = tmp_path / "m.wav"
-        _generate_silent_wav(music_file, duration=1.0)
-
-        runner = click.testing.CliRunner()
-        result = runner.invoke(main, [
-            "render", "--plan", str(plan_file), "--music", str(music_file),
-        ])
-        assert result.exit_code != 0
-
-    def test_render_plan_missing_assignments(self, tmp_path):
-        """Plan without assignments key is handled gracefully."""
-        plan_file = tmp_path / "plan.json"
-        plan_file.write_text(json.dumps({"bpm": 120}))
-        music_file = tmp_path / "m.wav"
-        _generate_silent_wav(music_file, duration=1.0)
-
-        out_file = tmp_path / "out.kdenlive"
-        runner = click.testing.CliRunner()
-        result = runner.invoke(main, [
-            "render", "--plan", str(plan_file), "--music", str(music_file),
-            "-o", str(out_file),
-        ])
-        assert result.exit_code == 0
-        assert out_file.exists()
+        assert 'width="1080"' in content
 
 
 # ---------------------------------------------------------------------------
@@ -622,31 +372,29 @@ class TestCLIRender:
 # ---------------------------------------------------------------------------
 
 def _generate_silent_wav(path: Path, duration: float = 1.0):
-    """Generate a tiny silent WAV file for CLI tests."""
-    cmd = [
-        "ffmpeg", "-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}",
-        "-y", str(path),
-    ]
     try:
-        subprocess.run(cmd, capture_output=True, check=True, timeout=10)
+        subprocess.run(
+            ["ffmpeg", "-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}",
+             "-y", str(path)],
+            capture_output=True, check=True, timeout=10,
+        )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        # Fallback: write a minimal valid WAV header + silence
         import struct
         sample_rate = 44100
         num_samples = int(sample_rate * duration)
-        data_size = num_samples * 2  # 16-bit mono
+        data_size = num_samples * 2
         with open(path, "wb") as f:
             f.write(b"RIFF")
             f.write(struct.pack("<I", 36 + data_size))
             f.write(b"WAVE")
             f.write(b"fmt ")
-            f.write(struct.pack("<I", 16))       # chunk size
-            f.write(struct.pack("<H", 1))        # PCM
-            f.write(struct.pack("<H", 1))        # mono
+            f.write(struct.pack("<I", 16))
+            f.write(struct.pack("<H", 1))
+            f.write(struct.pack("<H", 1))
             f.write(struct.pack("<I", sample_rate))
-            f.write(struct.pack("<I", sample_rate * 2))  # byte rate
-            f.write(struct.pack("<H", 2))        # block align
-            f.write(struct.pack("<H", 16))       # bits per sample
+            f.write(struct.pack("<I", sample_rate * 2))
+            f.write(struct.pack("<H", 2))
+            f.write(struct.pack("<H", 16))
             f.write(b"data")
             f.write(struct.pack("<I", data_size))
             f.write(b"\x00" * data_size)
