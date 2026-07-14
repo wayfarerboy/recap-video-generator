@@ -99,6 +99,23 @@ class TestOutputStructure:
         for i in range(1, len(starts)):
             assert starts[i] >= starts[i - 1], f"target_start not monotonic at index {i}"
 
+    def test_shuffled_tiers_deterministic_with_seed(self, beat_analysis, clip_analyses):
+        """Same seed produces identical assignments."""
+        a = assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", seed=42)
+        b = assign_clips(beat_analysis, clip_analyses, mode="shuffled-tiers", seed=42)
+        assert [x["clip"] for x in a["assignments"]] == [x["clip"] for x in b["assignments"]]
+        assert [x["target_start"] for x in a["assignments"]] == [x["target_start"] for x in b["assignments"]]
+
+    def test_shuffled_tiers_different_seeds_differ(self, beat_analysis, clip_analyses):
+        """Different seeds can produce different orderings."""
+        # With many clips, seed 42 vs 99 should nearly always differ
+        clips = _make_clip_analyses(20)
+        a = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=42)
+        b = assign_clips(beat_analysis, clips, mode="shuffled-tiers", seed=99)
+        clips_a = [x["clip"] for x in a["assignments"]]
+        clips_b = [x["clip"] for x in b["assignments"]]
+        assert clips_a != clips_b, "different seeds produced identical orderings"
+
     def test_beat_indices_are_monotonic(self, beat_analysis, clip_analyses):
         result = assign_clips(beat_analysis, clip_analyses)
         indices = [a["beat_index"] for a in result["assignments"]]

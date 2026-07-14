@@ -117,12 +117,19 @@ def beats(filepath):
     help="Maximum beats per clip.",
 )
 @click.option(
+    "--seed",
+    type=int,
+    default=42,
+    show_default=True,
+    help="Random seed for shuffled-tiers mode reproducibility.",
+)
+@click.option(
     "--force",
     is_flag=True,
     default=False,
     help="Re-analyze all clips and music, ignoring any cached results.",
 )
-def assign(clips, music, mode, min_beats, max_beats, force):
+def assign(clips, music, mode, min_beats, max_beats, seed, force):
     """Assign video clips to beat slots on the music timeline.
 
     Outputs a JSON assignment plan to stdout.
@@ -165,6 +172,7 @@ def assign(clips, music, mode, min_beats, max_beats, force):
         mode=mode,
         min_beats=min_beats,
         max_beats=max_beats,
+        seed=seed,
     )
 
     click.echo(json.dumps(plan, indent=2))
@@ -375,12 +383,19 @@ def analyze(video_path, window, force):
     help="Output aspect ratio.",
 )
 @click.option(
+    "--seed",
+    type=int,
+    default=42,
+    show_default=True,
+    help="Random seed for shuffled-tiers mode reproducibility.",
+)
+@click.option(
     "--force",
     is_flag=True,
     default=False,
     help="Re-analyze all clips and music, ignoring any cached results.",
 )
-def create(clips_dir, music_file, output_path, mode, ratio, force):
+def create(clips_dir, music_file, output_path, mode, ratio, seed, force):
     """Run the full recap pipeline: analyze → assign → render.
 
     CLIPS_DIR is a directory of source video clips (.mp4/.mov).
@@ -439,6 +454,7 @@ def create(clips_dir, music_file, output_path, mode, ratio, force):
         beat_analysis=beat_data,
         clip_analyses=clip_data,
         mode=mode,
+        seed=seed,
     )
     click.echo(f"  Assigned {len(plan['assignments'])} clip(s) to beat slots.")
 

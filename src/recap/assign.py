@@ -26,7 +26,7 @@ def assign_clips(
     mode: str = "shuffled-tiers",
     min_beats: int = 4,
     max_beats: int = 8,
-    seed: int | None = None,
+    seed: int | None = 42,
 ) -> dict[str, Any]:
     """Assign video clips to beat slots on the music timeline.
 
@@ -46,7 +46,8 @@ def assign_clips(
     max_beats : int
         Maximum number of beats a single clip may occupy  (default 8).
     seed : int or None
-        Random seed for shuffled-tiers reproducibility.
+        Random seed for shuffled-tiers reproducibility (default 42).
+        Pass ``None`` for system-random shuffle each run.
 
     Returns
     -------
